@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================================
-# DApps Localhost Launcher — Ultimate Dev Edition v2.3.0
+# DApps Localhost Launcher — Ultimate Dev Edition v2.4.0
 # Platform : Android Termux
 # Purpose  : Full-featured launcher untuk static/frontend/backend/fullstack dev
 # Notes    : Code lengkap — taruh sebagai $PREFIX/bin/dapps atau jalankan langsung.
@@ -18,7 +18,7 @@ HOME_DIR="${HOME:-/data/data/com.termux/files/home}"
 PROJECTS_DIR="${PROJECTS_DIR:-$HOME_DIR/dapps-projects}"
 CONFIG_FILE="${CONFIG_FILE:-$HOME_DIR/.dapps.conf}"
 LOG_DIR="${LOG_DIR:-$HOME_DIR/.dapps-logs}"
-LAUNCHER_VERSION="2.3.0"
+LAUNCHER_VERSION="2.4.0"
 
 mkdir -p "$PROJECTS_DIR" "$LOG_DIR"
 touch "$CONFIG_FILE"
