@@ -39,10 +39,10 @@
 curl -O https://raw.githubusercontent.com/Sylvarien/dApps-Localhost-Dev-Launcher-for-Android/main/launcher_website.sh
 
 # Make it executable
-chmod +x dapps.sh
+chmod +x launcher_website.sh
 
 # Move to PATH (optional)
-mv dapps.sh ~/.local/bin/dapps
+mv launcher_website.sh ~/.local/bin/dapps
 ```
 
 Or install directly:
