@@ -230,6 +230,35 @@ pkill -f "node.*myapp"
 
 ---
 
+## ✅ **TESTING CHECKLIST**
+
+```bash
+# Test 1: Port conflict
+nc -l 3000 &
+./dapps-launcher.sh
+# → Should use port 3001
+
+# Test 2: npm timeout
+# Edit package.json dengan typo
+# → Should timeout in 5 minutes
+
+# Test 3: Ctrl+C cleanup
+./dapps-launcher.sh
+# Start project
+# Ctrl+C
+# Check: ps aux | grep node
+# → No zombie processes
+
+# Test 4: Git conflict
+# Edit file, don't commit
+# Update project
+# → Should show error with hint
+
+# Test 5: .env with spaces
+echo 'DB_URL="postgres://user with space"' > .env
+# → Should load correctly
+```
+
 ## 📝 Changelog
 
 ### v1.0.0 (Jan 16, 2026)
