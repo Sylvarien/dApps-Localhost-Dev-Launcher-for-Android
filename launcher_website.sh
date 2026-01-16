@@ -82,16 +82,16 @@ sync_to_home() {
 # ----------------------------------------------------------------------------
 save_project() {
     local name="$1" path="$2" type="$3" fe_dir="$4" be_dir="$5" fe_port="$6" be_port="$7" fe_cmd="$8" be_cmd="$9" auto_sync="${10:-0}"
-    # remove old
-    awk -v n="$name" -F'\t' 'BEGIN{OFS=FS} $1!=n {print $0}' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" || true
+    awk -F'\t' -v n="$name" '$1!=n {print}' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" 2>/dev/null || true
     mv -f "$CONFIG_FILE.tmp" "$CONFIG_FILE"
-    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$name" "$path" "$type" "$fe_dir" "$be_dir" "$fe_port" "$be_port" "$fe_cmd" "$be_cmd" "$auto_sync" >> "$CONFIG_FILE"
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        "$name" "$path" "$type" "$fe_dir" "$be_dir" "$fe_port" "$be_port" "$fe_cmd" "$be_cmd" "$auto_sync" >> "$CONFIG_FILE"
 }
 
 load_project() {
     local name="$1"
     local line
-    line=$(grep -P "^${name}\t" "$CONFIG_FILE" || true)
+    line=$(grep "^${name}\	" "$CONFIG_FILE" 2>/dev/null || true)
     [ -z "$line" ] && return 1
     IFS=$'\t' read -r P_NAME P_PATH P_TYPE P_FE_DIR P_BE_DIR P_FE_PORT P_BE_PORT P_FE_CMD P_BE_CMD P_AUTO_SYNC <<< "$line"
     return 0
@@ -248,7 +248,10 @@ add_project_interactive() {
     echo "=== Tambah Project Baru ==="
     read -rp "Nama project: " name
     [ -z "$name" ] && { msg err "Nama kosong"; return; }
-    if grep -Pq "^${name}\t" "$CONFIG_FILE" 2>/dev/null; then msg err "Project sudah ada"; return; fi
+    if grep "^${name}\	" "$CONFIG_FILE" >/dev/null 2>&1; then
+    msg err "Project sudah ada"
+    return
+    fi
 
     echo "Sumber: (1) Git clone (2) Folder lokal (/storage atau home)"
     read -rp "Pilih (1/2): " s
@@ -303,7 +306,7 @@ select_project_prompt() {
         name="$sel"
     fi
     [ -z "$name" ] && { msg err "Pilihan kosong"; return 1; }
-    load_project "$name" || { msg err "Gagal load project: $name"; return 1; }
+    load_project "$name" || { msg err "Project tidak ditemukan: $name"; return 1; }
     echo "$name"
     return 0
 }
