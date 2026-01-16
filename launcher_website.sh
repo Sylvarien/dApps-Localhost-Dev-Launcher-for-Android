@@ -685,7 +685,7 @@ open_browser() {
 }
 
 # ============================================================================
-# MAIN MENU
+# MAIN MENU (Single-run: no loop)
 # ============================================================================
 
 show_menu() {
@@ -729,34 +729,37 @@ show_menu() {
     echo -n "Select option: "
 }
 
+# Single-run main: show menu once, execute chosen action, then exit (no loop)
 main_loop() {
-    while true; do
-        show_menu
-        read choice
-        
-        case "$choice" in
-            1)  select_project ;;
-            2)  add_project ;;
-            3)  update_project ;;
-            4)  start_project ;;
-            5)  stop_project ;;
-            6)  restart_project ;;
-            7)  show_status ;;
-            8)  view_logs ;;
-            9)  clean_cache ;;
-            10) open_browser ;;
-            11) 
-                show_header
-                print_msg "info" "Exiting..."
-                exit 0
-                ;;
-            *)
-                show_header
-                print_msg "error" "Invalid option"
-                pause
-                ;;
-        esac
-    done
+    show_menu
+    read choice
+
+    case "$choice" in
+        1)  select_project ;;
+        2)  add_project ;;
+        3)  update_project ;;
+        4)  start_project ;;
+        5)  stop_project ;;
+        6)  restart_project ;;
+        7)  show_status ;;
+        8)  view_logs ;;
+        9)  clean_cache ;;
+        10) open_browser ;;
+        11) 
+            show_header
+            print_msg "info" "Exiting..."
+            exit 0
+            ;;
+        *)
+            show_header
+            print_msg "error" "Invalid option"
+            pause
+            exit 1
+            ;;
+    esac
+
+    # After executing the selected action, exit to ensure there's no loop
+    exit 0
 }
 
 # ============================================================================
@@ -789,5 +792,5 @@ check_dependencies || {
     exit 1
 }
 
-# Start
+# Start (single-run)
 main_loop
