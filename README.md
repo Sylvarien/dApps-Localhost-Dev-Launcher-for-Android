@@ -52,6 +52,13 @@ curl -fsSL https://raw.githubusercontent.com/Sylvarien/dApps-Localhost-Dev-Launc
 ```
 
 # or if you want to install it then move it to the dapps folder:
+chose mode:
+
+mode 1:
+```bash
+curl -fsSL https://raw.githubusercontent.com/Sylvarien/dApps-Localhost-Dev-Launcher-for-Android/main/installer.sh | bash
+```
+mode 2:
 ```bash
 curl -fsSL -o ~/launcher_website.sh \
 https://raw.githubusercontent.com/Sylvarien/dApps-Localhost-Dev-Launcher-for-Android/main/launcher_website.sh \
