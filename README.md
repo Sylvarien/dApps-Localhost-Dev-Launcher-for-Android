@@ -51,6 +51,28 @@ Or install directly:
 curl -fsSL https://raw.githubusercontent.com/Sylvarien/dApps-Localhost-Dev-Launcher-for-Android/main/launcher_website.sh | bash
 ```
 
+# or if you want to install it then move it to the dapps folder:
+```bash
+curl -fsSL -o ~/launcher_website.sh \
+https://raw.githubusercontent.com/Sylvarien/dApps-Localhost-Dev-Launcher-for-Android/main/launcher_website.sh \
+&& chmod +x ~/launcher_website.sh \
+&& mv ~/launcher_website.sh $PREFIX/bin/dapps
+```
+run:
+```bash
+dapps
+```
+updated:
+```bash
+dapps # then chose update option
+```
+
+re-install & updated all in one: 
+```bash
+curl -fsSL https://raw.githubusercontent.com/Sylvarien/dApps-Localhost-Dev-Launcher-for-Android/main/launcher_website.sh \
+| sed '1c #!/data/data/com.termux/files/usr/bin/bash' \
+> $PREFIX/bin/dapps && chmod +x $PREFIX/bin/dapps
+```
 ---
 
 ## 📖 Usage
