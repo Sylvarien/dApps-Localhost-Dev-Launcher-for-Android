@@ -18,6 +18,12 @@
 # ✅ Tambah fitur tambahan: Monitor & Auto-Restart (sangat dibutuhkan untuk stability).
 # ✅ Tambah fitur tambahan: Backup Project (untuk keamanan data sebelum sync/update).
 # ✅ Pastikan kode clean, error handling lebih baik, MVP grade: Fokus pada core functionality dengan reliability.
+#
+# PERBAIKAN TAMBAHAN (v4.0.2):
+# ✅ Saat DB_NAME kosong, otomatis generate dan set DATABASE_URL full dengan default PostgreSQL (user: termux, no pass, host: localhost, port: 5432).
+# ✅ Tambah fitur create/edit .env: Jika .env belum ada saat start backend, prompt create dengan input variabel sebanyak yg user mau.
+# ✅ Jika .env ada, prompt edit: Tambah/update variabel dengan nama dan value.
+# ✅ Saat backend gagal start, tampilkan isi log secara langsung.
 # ============================================================================
 
 set -euo pipefail
@@ -29,13 +35,19 @@ PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 PROJECTS_DIR="$HOME/dapps-projects"
 CONFIG_FILE="$HOME/.dapps.conf"
 LOG_DIR="$HOME/.dapps-logs"
-LAUNCHER_VERSION="4.0.1"  # Update version for fixes
+LAUNCHER_VERSION="4.0.2"  # Update version for fixes
 
 DB_VIEWER_DIR="${DB_VIEWER_DIR:-$HOME/paxiforge-db-viewer}"
 DB_VIEWER_PORT="${DB_VIEWER_PORT:-8081}"
 
 PG_DATA="${PG_DATA:-$PREFIX/var/lib/postgresql}"
 PG_LOG="$HOME/pgsql.log"
+
+# Default PostgreSQL config
+DEFAULT_DB_USER="termux"  # Adjust if needed, Termux PostgreSQL often uses current user
+DEFAULT_DB_PASS=""  # No password by default
+DEFAULT_DB_HOST="localhost"
+DEFAULT_DB_PORT="5432"
 
 # Colors
 R="\033[31m"; G="\033[32m"; Y="\033[33m"; B="\033[34m"; C="\033[36m"; X="\033[0m"; BOLD="\033[1m"
@@ -656,10 +668,20 @@ start_service() {
     }
     
     if [ "$label" = "backend" ]; then
+        local envfile="$full_path/.env"
+        if [ ! -f "$envfile" ]; then
+            msg warn ".env tidak ditemukan. Membuat sekarang..."
+            create_env "$envfile"
+        else
+            if confirm ".env ada. Edit sekarang?"; then
+                edit_env "$envfile"
+            fi
+        fi
+        
         if command -v psql &>/dev/null; then
             msg info "Setting up PostgreSQL for backend..."
             start_postgres || msg warn "Postgres not available"
-            create_db_from_env "$num" || true
+            create_db_from_env "$num" "$full_path" || true
         fi
     fi
     
@@ -720,7 +742,12 @@ start_service() {
         echo -e "  ${G}→${X} Local: http://localhost:$final_port"
         return 0
     else
-        msg err "$label failed to start. Check: $log_file"
+        msg err "$label failed to start."
+        if [ -f "$log_file" ]; then
+            echo -e "${R}--- Log Content ---${X}"
+            cat "$log_file"
+            echo -e "${R}--- End Log ---${X}"
+        fi
         rm -f "$pid_file" "$port_file" || true
         return 1
     fi
@@ -799,15 +826,48 @@ install_deps() {
 }
 
 # ---------------------------
+# .env Create/Edit Helpers
+# ---------------------------
+create_env() {
+    local envfile="$1"
+    : > "$envfile"
+    
+    msg info "Creating .env file..."
+    while true; do
+        read -rp "Enter variable name (or empty to finish): " var_name
+        [ -z "$var_name" ] && break
+        read -rp "Enter value for $var_name: " var_value
+        echo "$var_name=$var_value" >> "$envfile"
+    done
+    msg ok ".env created with user-defined variables."
+}
+
+edit_env() {
+    local envfile="$1"
+    
+    msg info "Editing .env file..."
+    while true; do
+        read -rp "Enter variable name to add/update (or empty to finish): " var_name
+        [ -z "$var_name" ] && break
+        read -rp "Enter value for $var_name: " var_value
+        
+        # Remove existing if any
+        sed -i "/^$var_name=/d" "$envfile" 2>/dev/null || true
+        echo "$var_name=$var_value" >> "$envfile"
+    done
+    msg ok ".env updated."
+}
+
+# ---------------------------
 # Database helpers
 # ---------------------------
 parse_db_config_from_env() {
     local envfile="$1"
-    DB_HOST="127.0.0.1"
-    DB_PORT="5432"
+    DB_HOST="$DEFAULT_DB_HOST"
+    DB_PORT="$DEFAULT_DB_PORT"
     DB_NAME=""
-    DB_USER=""
-    DB_PASSWORD=""
+    DB_USER="$DEFAULT_DB_USER"
+    DB_PASSWORD="$DEFAULT_DB_PASS"
     
     [ ! -f "$envfile" ] && return 1
     
@@ -896,9 +956,9 @@ create_db_if_needed() {
 
 create_db_from_env() {
     local num="$1"
+    local be_path="$2"
     load_project "$num" || return 1
     
-    local be_path="$PROJECT_PATH/$BE_DIR"
     local envfile="$be_path/.env"
     
     [ ! -f "$envfile" ] && {
@@ -915,15 +975,20 @@ create_db_from_env() {
     
     if [ -z "$DB_NAME" ]; then
         msg warn "DB_NAME tidak ditemukan di .env"
-        # Perbaikan programmatic: Prompt user untuk set DB_NAME default
-        read -rp "Masukkan DB_NAME default (contoh: paxi_db): " DB_NAME
+        # Prompt for DB_NAME
+        read -rp "Masukkan DB_NAME (contoh: paxi_db): " DB_NAME
         if [ -z "$DB_NAME" ]; then
             msg err "DB_NAME diperlukan. Skip auto-create."
             return 1
         fi
-        # Tambahkan ke .env secara programmatic
+        
+        # Generate full DATABASE_URL
+        local database_url="postgresql://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME"
+        
+        # Tambahkan ke .env
         echo "DB_NAME=$DB_NAME" >> "$envfile"
-        msg ok "DB_NAME ditambahkan ke .env: $DB_NAME"
+        echo "DATABASE_URL=$database_url" >> "$envfile"
+        msg ok "DATABASE_URL ditambahkan ke .env: $database_url"
     fi
     
     if [ "$DB_HOST" != "127.0.0.1" ] && [ "$DB_HOST" != "localhost" ]; then
@@ -931,9 +996,7 @@ create_db_from_env() {
         return 1
     fi
     
-    if [ -n "$DB_USER" ]; then
-        create_role_if_needed "$DB_USER" "$DB_PASSWORD" || true
-    fi
+    create_role_if_needed "$DB_USER" "$DB_PASSWORD" || true
     
     create_db_if_needed "$DB_NAME" "$DB_USER" || true
     
