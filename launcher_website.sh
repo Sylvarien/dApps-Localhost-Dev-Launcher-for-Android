@@ -339,11 +339,17 @@ list_projects_table() {
         return 1
     fi
     
+    echo -e "${BOLD}┌─────────────────────────────────────────────────────────────────────────────┐${X}"
+    echo -e "${BOLD}│                            PROJECT LIST                                     │${X}"
+    echo -e "${BOLD}└─────────────────────────────────────────────────────────────────────────────┘${X}"
+    echo ""
     echo -e "${BOLD}ID  | Status | Name                  | Source      | FE Dir    | BE Dir${X}"
     echo "-------------------------------------------------------------------------------------"
     
+    local project_count=0
     while IFS='|' read -r id name local_path source_path fe_dir be_dir _; do
         [ -z "$id" ] && continue
+        project_count=$((project_count + 1))
         
         local status="${G}✓${X}"
         [ ! -d "$local_path" ] && status="${R}✗${X}"
@@ -370,7 +376,17 @@ list_projects_table() {
     done < "$CONFIG_FILE"
     
     echo ""
-    echo "Untuk detail: ketik => <ID> info"
+    
+    if [ $project_count -eq 0 ]; then
+        msg warn "Belum ada project! Tambahkan dengan menu 2 (Add Project)"
+        return 1
+    fi
+    
+    echo -e "${C}💡 Tips:${X}"
+    echo "  - Ketik angka di kolom ${BOLD}ID${X} untuk pilih project"
+    echo "  - Status ${G}[RUN]${X} = project sedang berjalan"
+    echo "  - Untuk detail: ketik => <ID> info (contoh: 1 info)"
+    
     return 0
 }
 
@@ -1526,24 +1542,46 @@ show_menu() {
         2) add_project ;;
         3)
             header
+            
+            # Check if there are projects first
+            if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
+                msg warn "Belum ada project!"
+                msg info "Tambahkan project dulu dengan menu 2 (Add Project)"
+                wait_key
+                return
+            fi
+            
+            # Show list
             list_projects_table || {
                 msg warn "No projects"
                 wait_key
                 return
             }
+            
             echo ""
+            echo -e "${Y}Masukkan ID project yang ingin di-start${X}"
             read -rp "Enter project ID: " id
             
             # Validate input
             if [ -z "$id" ]; then
                 msg err "Project ID tidak boleh kosong!"
+                msg info "Lihat kolom ID di table atas"
                 wait_key
                 return
             fi
             
             # Check if numeric
             if ! [[ "$id" =~ ^[0-9]+$ ]]; then
-                msg err "Project ID harus angka!"
+                msg err "Project ID harus angka! Anda masukkan: '$id'"
+                msg info "Contoh: ketik 1 untuk project dengan ID 1"
+                wait_key
+                return
+            fi
+            
+            # Check if ID exists
+            if ! grep -q "^${id}|" "$CONFIG_FILE" 2>/dev/null; then
+                msg err "Project ID $id tidak ditemukan!"
+                msg info "Lihat ID yang tersedia di table atas"
                 wait_key
                 return
             fi
@@ -1552,12 +1590,21 @@ show_menu() {
             ;;
         4)
             header
+            
+            if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
+                msg warn "Belum ada project!"
+                wait_key
+                return
+            fi
+            
             list_projects_table || {
                 msg warn "No projects"
                 wait_key
                 return
             }
+            
             echo ""
+            echo -e "${Y}Masukkan ID project yang ingin di-stop${X}"
             read -rp "Enter project ID: " id
             
             # Validate input
@@ -1573,21 +1620,42 @@ show_menu() {
                 return
             fi
             
+            if ! grep -q "^${id}|" "$CONFIG_FILE" 2>/dev/null; then
+                msg err "Project ID $id tidak ditemukan!"
+                wait_key
+                return
+            fi
+            
             stop_project_by_id "$id"
             ;;
         5)
             header
+            
+            if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
+                msg warn "Belum ada project!"
+                wait_key
+                return
+            fi
+            
             list_projects_table || {
                 msg warn "No projects"
                 wait_key
                 return
             }
+            
             echo ""
+            echo -e "${Y}Masukkan ID project untuk install dependencies${X}"
             read -rp "Enter project ID: " id
             
             # Validate
             if [ -z "$id" ] || ! [[ "$id" =~ ^[0-9]+$ ]]; then
                 msg err "Project ID harus angka!"
+                wait_key
+                return
+            fi
+            
+            if ! grep -q "^${id}|" "$CONFIG_FILE" 2>/dev/null; then
+                msg err "Project ID $id tidak ditemukan!"
                 wait_key
                 return
             fi
