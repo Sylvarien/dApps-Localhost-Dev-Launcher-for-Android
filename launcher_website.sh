@@ -1,12 +1,15 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================================
-# DApps Localhost Launcher - Professional v4.0.0 (NO ID SYSTEM)
+# DApps Localhost Launcher - Professional v4.0.0 (SEMUA FITUR LENGKAP)
 # 
-# MAJOR CHANGES:
-# ✅ Sistem ID dihapus - menggunakan urutan list (nomor baris)
-# ✅ Config lebih simpel: name|local_path|source_path|fe_dir|be_dir|...
-# ✅ Akses project dengan nomor urut (1, 2, 3, dst)
-# ✅ Auto-reindex saat delete project
+# CHANGES v4.0:
+# ✅ ID diganti dengan nomor urut (lebih simpel)
+# ✅ SEMUA fitur v3.5.0 tetap ada!
+# ✅ Server bind ke 0.0.0.0 untuk akses eksternal
+# ✅ Logging sync detail (file list + bytes)
+# ✅ Multi-framework support (Vite/Next/CRA/Static/Express/Nest)
+# ✅ PostgreSQL integration
+# ✅ Database viewer
 # ============================================================================
 
 set -euo pipefail
@@ -97,29 +100,24 @@ save_project() {
     local fe_dir="$5" be_dir="$6" fe_port="$7" be_port="$8"
     local fe_cmd="$9" be_cmd="${10}" auto_restart="${11}" auto_sync="${12}"
     
-    # Create temp file
     local tmp_file="$CONFIG_FILE.tmp.$$"
     : > "$tmp_file"
     
     local current_line=1
     local updated=false
     
-    # Read existing config and update/insert
     while IFS='|' read -r old_name old_path old_src old_fe old_be old_fe_port old_be_port old_fe_cmd old_be_cmd old_ar old_as || [ -n "$old_name" ]; do
         if [ $current_line -eq $num ]; then
-            # Update this line
             printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" \
                 "$name" "$local_path" "$source_path" "$fe_dir" "$be_dir" "$fe_port" "$be_port" "$fe_cmd" "$be_cmd" "$auto_restart" "$auto_sync" >> "$tmp_file"
             updated=true
         else
-            # Keep existing line
             printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" \
                 "$old_name" "$old_path" "$old_src" "$old_fe" "$old_be" "$old_fe_port" "$old_be_port" "$old_fe_cmd" "$old_be_cmd" "$old_ar" "$old_as" >> "$tmp_file"
         fi
         current_line=$((current_line + 1))
     done < "$CONFIG_FILE"
     
-    # If line number is greater than current lines, append
     if [ "$updated" = false ]; then
         printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" \
             "$name" "$local_path" "$source_path" "$fe_dir" "$be_dir" "$fe_port" "$be_port" "$fe_cmd" "$be_cmd" "$auto_restart" "$auto_sync" >> "$tmp_file"
@@ -141,7 +139,6 @@ load_project() {
         return 1
     fi
     
-    # Get line by number
     local line
     line=$(sed -n "${num}p" "$CONFIG_FILE" 2>/dev/null || true)
     
@@ -150,7 +147,6 @@ load_project() {
         return 1
     fi
     
-    # Parse
     IFS='|' read -r PROJECT_NAME PROJECT_PATH SOURCE_PATH \
                     FE_DIR BE_DIR FE_PORT BE_PORT FE_CMD BE_CMD \
                     AUTO_RESTART AUTO_SYNC <<< "$line"
@@ -160,7 +156,6 @@ load_project() {
         return 1
     fi
     
-    # Export
     export PROJECT_NUM="$num"
     export PROJECT_NAME PROJECT_PATH SOURCE_PATH FE_DIR BE_DIR FE_PORT BE_PORT FE_CMD BE_CMD AUTO_RESTART AUTO_SYNC
     
@@ -189,7 +184,7 @@ path_type() {
 }
 
 # ---------------------------
-# Sync functions
+# SYNC FUNCTIONS
 # ---------------------------
 copy_storage_to_termux() {
     local src="$1" dest="$2" proj_num="$3"
@@ -206,7 +201,7 @@ copy_storage_to_termux() {
     msg info "Syncing: $(path_type "$src") → $dest"
     
     if command -v rsync &>/dev/null; then
-        msg info "Menggunakan rsync..."
+        msg info "Menggunakan rsync (detailed logging)..."
         
         if rsync -avh --delete --checksum --progress \
             --out-format='%n|%l|%t' \
@@ -243,11 +238,11 @@ EOF
             
             msg ok "Synced: $files files, $(numfmt --to=iec-i --suffix=B $total_bytes 2>/dev/null || echo "${total_bytes}B")"
         else
-            msg err "rsync gagal"
+            msg err "rsync gagal. Lihat $tmp_log"
             return 1
         fi
     else
-        msg warn "rsync tidak tersedia. Menggunakan tar..."
+        msg warn "rsync tidak tersedia. Menggunakan tar fallback..."
         
         (cd "$src" && tar -cpf - .) | (cd "$dest" && tar -xpf -) || {
             msg err "tar copy gagal"
@@ -267,8 +262,8 @@ EOF
 }
 EOF
         
-        echo "TAR: files=$cnt bytes=$bytes" > "$final_log"
-        msg ok "Copy done: $cnt files"
+        echo "TAR FALLBACK: files=$cnt bytes=$bytes" > "$final_log"
+        msg ok "Copy done (tar): $cnt files"
     fi
 
     date -u +"%Y-%m-%dT%H:%M:%SZ" > "$dest/.dapps/.last_synced" 2>/dev/null || true
@@ -280,8 +275,8 @@ sync_project_by_num() {
     load_project "$num" || { msg err "Project not found"; return 1; }
     
     if [ -z "$SOURCE_PATH" ] || [ ! -d "$SOURCE_PATH" ]; then
-        msg warn "source_path tidak diset untuk project #$num"
-        read -rp "Masukkan storage source path: " sp
+        msg warn "source_path tidak diset untuk project $PROJECT_NAME"
+        read -rp "Masukkan storage source path (kosong untuk batalkan): " sp
         [ -z "$sp" ] && { msg err "Cancelled"; return 1; }
         SOURCE_PATH="$sp"
         save_project "$num" "$PROJECT_NAME" "$PROJECT_PATH" "$SOURCE_PATH" \
@@ -298,13 +293,49 @@ sync_project_by_num() {
     return 0
 }
 
+sync_project() {
+    header
+    echo -e "${BOLD}Sync Project${X}\n"
+    echo "1) Sync by project number"
+    echo "2) Sync ALL projects yang punya source_path"
+    echo "0) Kembali"
+    read -rp "Select: " ch
+    
+    case "$ch" in
+        1)
+            list_projects_table || { msg warn "No projects"; wait_key; return; }
+            echo ""
+            read -rp "Enter project number to sync: " num
+            [ -z "$num" ] && { msg err "Number required"; wait_key; return; }
+            sync_project_by_num "$num"
+            wait_key
+            ;;
+        2)
+            local line_num=0
+            while IFS='|' read -r name local_path source_path _; do
+                line_num=$((line_num + 1))
+                [ -z "$name" ] && continue
+                if [ -n "$source_path" ] && [ -d "$source_path" ]; then
+                    msg info "Syncing $name (#$num)"
+                    sync_project_by_num "$line_num" || msg warn "Failed: $name"
+                else
+                    msg warn "Skip $name (#$line_num) - no source_path"
+                fi
+            done < "$CONFIG_FILE"
+            wait_key
+            ;;
+        0) return ;;
+        *) msg err "Invalid"; wait_key ;;
+    esac
+}
+
 auto_sync_project() {
     local num="$1"
     load_project "$num" || return 1
     [ "$AUTO_SYNC" != "1" ] && return 0
     
     if [ -n "$SOURCE_PATH" ] && [ -d "$SOURCE_PATH" ]; then
-        msg info "Auto-sync → $PROJECT_NAME"
+        msg info "Auto-sync aktif → Syncing $PROJECT_NAME"
         sync_project_by_num "$num" || msg warn "Auto-sync gagal"
     fi
     return 0
@@ -357,17 +388,46 @@ list_projects_table() {
     echo ""
     
     if [ $line_num -eq 0 ]; then
-        msg warn "Belum ada project!"
+        msg warn "Belum ada project! Tambahkan dengan menu 2"
         return 1
     fi
     
-    echo -e "${C}💡 Tips:${X} Ketik angka di kolom ${BOLD}No.${X} untuk pilih project"
+    echo -e "${C}💡 Tips:${X}"
+    echo "  - Ketik angka di kolom ${BOLD}No.${X} untuk pilih project"
+    echo "  - Status ${G}[RUN]${X} = project sedang berjalan"
     
     return 0
 }
 
+prompt_open_path_after_list() {
+    echo ""
+    read -rp "Ketik (<nomor> info) atau tekan ENTER: " cmd
+    [ -z "$cmd" ] && return 0
+    
+    if [[ "$cmd" =~ ^([0-9]+)[[:space:]]+info$ ]]; then
+        local num="${BASH_REMATCH[1]}"
+        load_project "$num" || { msg err "Project not found"; return 1; }
+        
+        echo -e "\n${BOLD}=== Project Info: $PROJECT_NAME (#$num) ===${X}"
+        echo "Local Path  : $PROJECT_PATH"
+        echo "Source Path : ${SOURCE_PATH:-(none)}"
+        echo "FE Dir      : ${FE_DIR:-(none)}"
+        echo "BE Dir      : ${BE_DIR:-(none)}"
+        echo "FE Port     : ${FE_PORT:-3000}"
+        echo "BE Port     : ${BE_PORT:-8000}"
+        echo "FE Command  : ${FE_CMD:-npx serve .}"
+        echo "BE Command  : ${BE_CMD:-npm start}"
+        echo "Auto Restart: ${AUTO_RESTART:-0}"
+        echo "Auto Sync   : ${AUTO_SYNC:-0}"
+        wait_key
+    else
+        msg err "Format: <nomor> info"
+        wait_key
+    fi
+}
+
 # ---------------------------
-# PostgreSQL
+# PostgreSQL helpers
 # ---------------------------
 init_postgres_if_needed() {
     if ! command -v initdb &>/dev/null; then
@@ -376,35 +436,57 @@ init_postgres_if_needed() {
     fi
     
     if [ ! -d "$PG_DATA" ] || [ -z "$(ls -A "$PG_DATA" 2>/dev/null || true)" ]; then
-        msg info "Inisialisasi PostgreSQL"
+        msg info "Inisialisasi PostgreSQL di: $PG_DATA"
         initdb "$PG_DATA" || { msg err "initdb gagal"; return 1; }
         msg ok "Postgres data siap"
     fi
     return 0
 }
 
+status_postgres() {
+    if ! command -v pg_ctl &>/dev/null; then
+        msg warn "pg_ctl tidak tersedia"
+        return 1
+    fi
+    
+    if [ -d "$PG_DATA" ]; then
+        if pg_ctl -D "$PG_DATA" status >/dev/null 2>&1; then
+            msg ok "Postgres berjalan"
+            return 0
+        fi
+    fi
+    
+    msg warn "Postgres tidak berjalan"
+    return 1
+}
+
 start_postgres() {
     init_postgres_if_needed || return 1
     
-    if pg_ctl -D "$PG_DATA" status >/dev/null 2>&1; then
+    if status_postgres >/dev/null 2>&1; then
         msg info "Postgres sudah berjalan"
         return 0
     fi
     
     msg info "Starting PostgreSQL..."
     nohup pg_ctl -D "$PG_DATA" -l "$PG_LOG" start > /dev/null 2>&1 || {
-        msg err "Gagal start Postgres"
+        msg err "Gagal start Postgres. Cek $PG_LOG"
         return 1
     }
     
     sleep 2
-    return 0
+    status_postgres && return 0 || return 1
 }
 
 stop_postgres() {
-    if pg_ctl -D "$PG_DATA" status >/dev/null 2>&1; then
+    if status_postgres >/dev/null 2>&1; then
         msg info "Stopping PostgreSQL..."
-        pg_ctl -D "$PG_DATA" stop -m fast >/dev/null 2>&1 || true
+        pg_ctl -D "$PG_DATA" stop -m fast >/dev/null 2>&1 || {
+            msg warn "pg_ctl stop gagal"
+        }
+        sleep 1
+    else
+        msg info "Postgres tidak berjalan"
     fi
     return 0
 }
@@ -542,7 +624,7 @@ start_service() {
     local label="$5"
     
     if [ -z "$num" ]; then
-        msg err "INTERNAL ERROR: Project number kosong!"
+        msg err "INTERNAL ERROR: Project number kosong di start_service!"
         return 1
     fi
     
@@ -567,7 +649,9 @@ start_service() {
     
     if [ "$label" = "backend" ]; then
         if command -v psql &>/dev/null; then
-            start_postgres || true
+            msg info "Setting up PostgreSQL for backend..."
+            start_postgres || msg warn "Postgres not available"
+            create_db_from_env "$num" || true
         fi
     fi
     
@@ -585,8 +669,8 @@ start_service() {
         local prev_sum=""; [ -f "$pkgsum_file" ] && prev_sum=$(cat "$pkgsum_file" 2>/dev/null || true)
         
         if [ -n "$cur_sum" ] && [ "$cur_sum" != "$prev_sum" ]; then
-            msg info "package.json changed → installing"
-            (cd "$full_path" && npm install --silent) && msg ok "deps installed" || msg warn "install failed"
+            msg info "package.json changed → installing for $label"
+            (cd "$full_path" && npm install --silent) && msg ok "$label deps installed" || msg warn "$label install failed"
             echo "$cur_sum" > "$pkgsum_file"
         fi
     fi
@@ -594,13 +678,13 @@ start_service() {
     if [ -z "$cmd" ] || [ "$cmd" = "auto" ]; then
         cmd=$(detect_framework_and_cmd "$full_path")
         [ -z "$cmd" ] && cmd="npx serve . -l tcp://0.0.0.0:$final_port"
-        msg info "Auto-detected: $cmd"
+        msg info "Auto-detected command: $cmd"
     fi
     
     local adj_cmd
     adj_cmd=$(adjust_cmd_for_bind "$cmd" "$final_port")
     
-    msg info "Starting $label: $adj_cmd"
+    msg info "Starting $label with: $adj_cmd"
     
     (
         cd "$full_path" || exit 1
@@ -625,9 +709,10 @@ start_service() {
         echo -e "  ${G}→${X} PID: $pid"
         echo -e "  ${G}→${X} Port: $final_port"
         echo -e "  ${G}→${X} URL: http://$ip:$final_port"
+        echo -e "  ${G}→${X} Local: http://localhost:$final_port"
         return 0
     else
-        msg err "$label failed. Check: $log_file"
+        msg err "$label failed to start. Check: $log_file"
         rm -f "$pid_file" "$port_file" || true
         return 1
     fi
@@ -666,26 +751,172 @@ stop_service() {
 }
 
 # ---------------------------
-# Install deps
+# Install dependencies
 # ---------------------------
 install_deps() {
     local num="$1"
     load_project "$num" || { msg err "Project not found"; return 1; }
     
-    msg info "Installing deps for $PROJECT_NAME..."
+    msg info "Installing dependencies for $PROJECT_NAME..."
     
     for spec in "Frontend:$FE_DIR" "Backend:$BE_DIR"; do
         local label=${spec%%:*}
         local dir=${spec#*:}
         local full="$PROJECT_PATH/$dir"
         
-        [ -z "$dir" ] || [ "$dir" = "(none)" ] && continue
-        [ ! -d "$full" ] && { msg warn "$label not found"; continue; }
-        [ ! -f "$full/package.json" ] && { msg warn "$label no package.json"; continue; }
+        [ -z "$dir" ] || [ "$dir" = "(none)" ] && {
+            msg warn "$label dir not configured"
+            continue
+        }
+        
+        [ ! -d "$full" ] && {
+            msg warn "$label folder not found: $full"
+            continue
+        }
+        
+        [ ! -f "$full/package.json" ] && {
+            msg warn "$label has no package.json"
+            continue
+        }
         
         msg info "Installing $label..."
         (cd "$full" && npm install) && msg ok "$label installed" || msg err "$label install failed"
     done
+}
+
+# ---------------------------
+# Database helpers
+# ---------------------------
+parse_db_config_from_env() {
+    local envfile="$1"
+    DB_HOST="127.0.0.1"
+    DB_PORT="5432"
+    DB_NAME=""
+    DB_USER=""
+    DB_PASSWORD=""
+    
+    [ ! -f "$envfile" ] && return 1
+    
+    while IFS= read -r line; do
+        line="${line%%#*}"
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        
+        if [[ "$line" =~ ^DB_HOST= ]]; then
+            DB_HOST="${line#DB_HOST=}"
+            DB_HOST="${DB_HOST%\"}"
+            DB_HOST="${DB_HOST#\"}"
+        fi
+        if [[ "$line" =~ ^DB_PORT= ]]; then
+            DB_PORT="${line#DB_PORT=}"
+            DB_PORT="${DB_PORT%\"}"
+            DB_PORT="${DB_PORT#\"}"
+        fi
+        if [[ "$line" =~ ^DB_NAME= ]]; then
+            DB_NAME="${line#DB_NAME=}"
+            DB_NAME="${DB_NAME%\"}"
+            DB_NAME="${DB_NAME#\"}"
+        fi
+        if [[ "$line" =~ ^DB_USER= ]]; then
+            DB_USER="${line#DB_USER=}"
+            DB_USER="${DB_USER%\"}"
+            DB_USER="${DB_USER#\"}"
+        fi
+        if [[ "$line" =~ ^DB_PASSWORD= ]]; then
+            DB_PASSWORD="${line#DB_PASSWORD=}"
+            DB_PASSWORD="${DB_PASSWORD%\"}"
+            DB_PASSWORD="${DB_PASSWORD#\"}"
+        fi
+        if [[ "$line" =~ ^DATABASE_URL= ]]; then
+            url="${line#DATABASE_URL=}"
+            url="${url%\"}"
+            url="${url#\"}"
+            
+            if [[ "$url" =~ postgresql://([^:]+):([^@]+)@([^:]+):([0-9]+)/(.+) ]]; then
+                DB_USER="${BASH_REMATCH[1]}"
+                DB_PASSWORD="${BASH_REMATCH[2]}"
+                DB_HOST="${BASH_REMATCH[3]}"
+                DB_PORT="${BASH_REMATCH[4]}"
+                DB_NAME="${BASH_REMATCH[5]}"
+            elif [[ "$url" =~ postgresql://([^:]+):([^@]+)@([^/]+)/(.+) ]]; then
+                DB_USER="${BASH_REMATCH[1]}"
+                DB_PASSWORD="${BASH_REMATCH[2]}"
+                DB_HOST="${BASH_REMATCH[3]}"
+                DB_NAME="${BASH_REMATCH[4]}"
+            fi
+        fi
+    done < "$envfile"
+    
+    echo "${DB_HOST}|${DB_PORT}|${DB_NAME}|${DB_USER}|${DB_PASSWORD}"
+    return 0
+}
+
+create_role_if_needed() {
+    local user="$1"
+    local pass="$2"
+    
+    if psql -Atqc "SELECT 1 FROM pg_roles WHERE rolname='${user}';" 2>/dev/null | grep -q 1; then
+        return 0
+    fi
+    
+    if [ -z "$pass" ]; then
+        psql -c "CREATE ROLE \"$user\" WITH LOGIN;" >/dev/null 2>&1 || return 1
+    else
+        psql -c "CREATE ROLE \"$user\" WITH LOGIN PASSWORD '$pass';" >/dev/null 2>&1 || return 1
+    fi
+}
+
+create_db_if_needed() {
+    local db="$1"
+    local owner="$2"
+    
+    if psql -Atqc "SELECT 1 FROM pg_database WHERE datname='${db}';" 2>/dev/null | grep -q 1; then
+        return 0
+    fi
+    
+    if [ -n "$owner" ]; then
+        psql -c "CREATE DATABASE \"$db\" OWNER \"$owner\";" >/dev/null 2>&1 || return 1
+    else
+        psql -c "CREATE DATABASE \"$db\";" >/dev/null 2>&1 || return 1
+    fi
+}
+
+create_db_from_env() {
+    local num="$1"
+    load_project "$num" || return 1
+    
+    local be_path="$PROJECT_PATH/$BE_DIR"
+    local envfile="$be_path/.env"
+    
+    [ ! -f "$envfile" ] && {
+        msg warn ".env backend tidak ditemukan"
+        return 1
+    }
+    
+    parsed=$(parse_db_config_from_env "$envfile") || {
+        msg err "Gagal parse .env"
+        return 1
+    }
+    
+    IFS='|' read -r DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD <<< "$parsed"
+    
+    [ -z "$DB_NAME" ] && {
+        msg warn "DB_NAME tidak ditemukan di .env"
+        return 1
+    }
+    
+    if [ "$DB_HOST" != "127.0.0.1" ] && [ "$DB_HOST" != "localhost" ]; then
+        msg warn "DB_HOST bukan lokal ($DB_HOST). Skip auto-create."
+        return 1
+    fi
+    
+    if [ -n "$DB_USER" ]; then
+        create_role_if_needed "$DB_USER" "$DB_PASSWORD" || true
+    fi
+    
+    create_db_if_needed "$DB_NAME" "$DB_USER" || true
+    
+    msg ok "DB $DB_NAME siap"
+    return 0
 }
 
 # ---------------------------
@@ -695,13 +926,13 @@ run_project_by_num() {
     local num="$1"
     
     if [ -z "$num" ]; then
-        msg err "Nomor project kosong!"
+        msg err "Nomor project tidak boleh kosong!"
         wait_key
         return 1
     fi
     
     load_project "$num" || {
-        msg err "Project #$num not found"
+        msg err "Project not found"
         wait_key
         return 1
     }
@@ -711,12 +942,14 @@ run_project_by_num() {
     
     if [ -z "$FE_DIR" ] || [ "$FE_DIR" = "(none)" ]; then
         msg err "Frontend directory belum dikonfigurasi!"
+        msg info "Gunakan 'Edit Project Config' (menu 11) untuk set FE_DIR"
         wait_key
         return 1
     fi
     
     if [ ! -d "$PROJECT_PATH/$FE_DIR" ]; then
-        msg err "Frontend folder not found: $PROJECT_PATH/$FE_DIR"
+        msg err "Frontend folder tidak ditemukan: $PROJECT_PATH/$FE_DIR"
+        msg info "Gunakan 'Edit Project Config' (menu 11) untuk update FE_DIR"
         wait_key
         return 1
     fi
@@ -726,7 +959,8 @@ run_project_by_num() {
         if [ -d "$PROJECT_PATH/$BE_DIR" ]; then
             has_backend=true
         else
-            msg warn "Backend folder not found, skipping"
+            msg warn "Backend folder tidak ditemukan: $PROJECT_PATH/$BE_DIR"
+            msg warn "Backend akan di-skip"
         fi
     fi
     
@@ -802,7 +1036,7 @@ add_project() {
     local source_path=""
     
     if confirm "Import dari storage (sdcard)?"; then
-        read -rp "Path storage: " src
+        read -rp "Path storage (contoh: /storage/emulated/0/Projects/$name): " src
         [ -z "$src" ] && {
             msg err "Path kosong"
             wait_key
@@ -830,7 +1064,8 @@ add_project() {
     fi
     
     echo ""
-    echo -e "${BOLD}Konfigurasi Folder${X}"
+    echo -e "${BOLD}Konfigurasi Folder (WAJIB!)${X}"
+    echo "Masukkan nama folder relatif terhadap project root"
     echo ""
     
     read -rp "Frontend directory (contoh: frontend, client, web): " fe_dir
@@ -851,7 +1086,7 @@ add_project() {
     local fe_cmd="auto"
     local be_cmd="auto"
     
-    if confirm "Custom start commands?"; then
+    if confirm "Custom start commands? (No = auto-detect)"; then
         read -rp "Frontend command: " fe_cmd
         read -rp "Backend command: " be_cmd
         [ -z "$fe_cmd" ] && fe_cmd="auto"
@@ -873,7 +1108,7 @@ add_project() {
 }
 
 # ---------------------------
-# Edit project
+# Edit project config
 # ---------------------------
 edit_project_config() {
     header
@@ -975,54 +1210,12 @@ delete_project() {
         rm -rf "$PROJECT_PATH" && msg ok "Files deleted"
     fi
     
-    # Remove line from config
     sed -i "${num}d" "$CONFIG_FILE"
     
-    # Clean up log files for this project number
     rm -f "$LOG_DIR/${num}_"*.{pid,log,port,out} 2>/dev/null || true
     
-    msg ok "Project removed"
-    msg info "Project numbers akan ter-reindex otomatis"
+    msg ok "Project removed from launcher"
     wait_key
-}
-
-# ---------------------------
-# Sync menu
-# ---------------------------
-sync_project() {
-    header
-    echo -e "${BOLD}Sync Project${X}\n"
-    echo "1) Sync by project number"
-    echo "2) Sync ALL projects"
-    echo "0) Kembali"
-    read -rp "Select: " ch
-    
-    case "$ch" in
-        1)
-            list_projects_table || { msg warn "No projects"; wait_key; return; }
-            echo ""
-            read -rp "Enter project number: " num
-            [ -z "$num" ] && { msg err "Number required"; wait_key; return; }
-            sync_project_by_num "$num"
-            wait_key
-            ;;
-        2)
-            local line_num=0
-            while IFS='|' read -r name local_path source_path _; do
-                line_num=$((line_num + 1))
-                [ -z "$name" ] && continue
-                if [ -n "$source_path" ] && [ -d "$source_path" ]; then
-                    msg info "Syncing #$line_num: $name"
-                    sync_project_by_num "$line_num" || msg warn "Failed"
-                else
-                    msg warn "Skip #$line_num - no source"
-                fi
-            done < "$CONFIG_FILE"
-            wait_key
-            ;;
-        0) return ;;
-        *) msg err "Invalid"; wait_key ;;
-    esac
 }
 
 # ---------------------------
@@ -1040,13 +1233,13 @@ view_logs() {
     read -rp "Enter project number: " num
     
     if [ -z "$num" ]; then
-        msg err "Number required"
+        msg err "Number kosong!"
         wait_key
         return
     fi
     
     if ! [[ "$num" =~ ^[0-9]+$ ]]; then
-        msg err "Must be number"
+        msg err "Number harus angka!"
         wait_key
         return
     fi
@@ -1058,7 +1251,7 @@ view_logs() {
     }
     
     echo ""
-    echo -e "${BOLD}=== Logs: $PROJECT_NAME (#$num) ===${X}"
+    echo -e "${BOLD}=== Logs for: $PROJECT_NAME (#$num) ===${X}"
     echo ""
     
     local fe_log="$LOG_DIR/${num}_frontend.log"
@@ -1066,6 +1259,7 @@ view_logs() {
     local sync_log="$LOG_DIR/${num}_sync.log"
     
     echo -e "${C}--- Frontend Log ---${X}"
+    echo "File: $fe_log"
     if [ -f "$fe_log" ]; then
         tail -n 50 "$fe_log"
     else
@@ -1074,6 +1268,7 @@ view_logs() {
     
     echo ""
     echo -e "${C}--- Backend Log ---${X}"
+    echo "File: $be_log"
     if [ -f "$be_log" ]; then
         tail -n 50 "$be_log"
     else
@@ -1082,11 +1277,15 @@ view_logs() {
     
     echo ""
     echo -e "${C}--- Sync Log ---${X}"
+    echo "File: $sync_log"
     if [ -f "$sync_log" ]; then
         tail -n 30 "$sync_log"
     else
         echo "(no log yet)"
     fi
+    
+    echo ""
+    echo -e "${Y}Tip: cat $fe_log untuk lihat full log${X}"
     
     wait_key
 }
@@ -1169,40 +1368,41 @@ diagnose_and_fix() {
     
     echo ""
     msg info "PostgreSQL status:"
-    if pg_ctl -D "$PG_DATA" status >/dev/null 2>&1; then
-        msg ok "Postgres running"
-    else
-        msg warn "Postgres not running"
-    fi
+    status_postgres || msg warn "Install: pkg install postgresql"
     
     echo ""
-    msg info "Config file check..."
+    msg info "Checking config file..."
     if [ -f "$CONFIG_FILE" ] && [ -s "$CONFIG_FILE" ]; then
         local count=$(wc -l < "$CONFIG_FILE")
         msg ok "Config OK: $count projects"
         echo ""
-        echo "Sample:"
-        head -n3 "$CONFIG_FILE"
+        echo "First line sample:"
+        head -n1 "$CONFIG_FILE"
+        
+        local bad_lines=0
+        while IFS='|' read -r name _; do
+            if [ -z "$name" ]; then
+                bad_lines=$((bad_lines + 1))
+            fi
+        done < "$CONFIG_FILE"
+        
+        if [ $bad_lines -gt 0 ]; then
+            msg warn "$bad_lines malformed lines in config!"
+        else
+            msg ok "No malformed config lines"
+        fi
     else
-        msg warn "Config empty"
+        msg warn "Config file empty or missing"
     fi
     
     echo ""
-    msg info "Running services:"
-    local running=0
-    for pidfile in "$LOG_DIR"/*_frontend.pid "$LOG_DIR"/*_backend.pid; do
-        [ -f "$pidfile" ] || continue
-        local pid=$(cat "$pidfile" 2>/dev/null || true)
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            running=$((running + 1))
-            echo "  - PID $pid (${pidfile##*/})"
-        fi
-    done
-    
-    if [ $running -eq 0 ]; then
-        msg info "No services running"
+    msg info "Open ports:"
+    if command -v ss &>/dev/null; then
+        ss -tuln 2>/dev/null | head -n 20
+    elif command -v netstat &>/dev/null; then
+        netstat -tuln 2>/dev/null | head -n 20
     else
-        msg ok "$running services running"
+        msg warn "No network tools available"
     fi
     
     echo ""
@@ -1272,6 +1472,7 @@ show_menu() {
         1)
             header
             list_projects_table || msg warn "No projects"
+            prompt_open_path_after_list || true
             wait_key
             ;;
         2) add_project ;;
@@ -1283,23 +1484,42 @@ show_menu() {
             
             if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
                 msg warn "Belum ada project!"
+                msg info "Tambahkan project dulu dengan menu 2"
+                wait_key
+                continue
+            fi
+            
+            local project_count=$(wc -l < "$CONFIG_FILE" 2>/dev/null || echo "0")
+            if [ "$project_count" -eq 0 ]; then
+                msg warn "Config file ada tapi tidak ada project valid"
+                msg info "Tambahkan project dengan menu 2"
                 wait_key
                 continue
             fi
             
             if ! list_projects_table; then
-                msg err "No projects"
+                msg err "Gagal menampilkan project list"
                 wait_key
                 continue
             fi
             
             echo ""
-            read -rp "Masukkan nomor project (0 untuk batal): " num
+            echo -e "${BOLD}${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
+            echo -e "${BOLD}Pilih project yang ingin di-start${X}"
+            echo -e "${BOLD}${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
+            echo ""
+            read -rp "Masukkan nomor project (atau 0 untuk batal): " num
             
             [ "$num" = "0" ] && continue
             
-            if [ -z "$num" ] || ! [[ "$num" =~ ^[0-9]+$ ]]; then
-                msg err "Nomor harus angka!"
+            if [ -z "$num" ]; then
+                msg err "Nomor tidak boleh kosong!"
+                wait_key
+                continue
+            fi
+            
+            if ! [[ "$num" =~ ^[0-9]+$ ]]; then
+                msg err "Nomor harus ANGKA!"
                 wait_key
                 continue
             fi
@@ -1310,7 +1530,7 @@ show_menu() {
             header
             
             if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
-                msg warn "No projects"
+                msg warn "Belum ada project!"
                 wait_key
                 return
             fi
@@ -1325,7 +1545,7 @@ show_menu() {
             read -rp "Enter project number: " num
             
             if [ -z "$num" ] || ! [[ "$num" =~ ^[0-9]+$ ]]; then
-                msg err "Must be number"
+                msg err "Nomor harus angka!"
                 wait_key
                 return
             fi
@@ -1336,7 +1556,7 @@ show_menu() {
             header
             
             if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
-                msg warn "No projects"
+                msg warn "Belum ada project!"
                 wait_key
                 return
             fi
@@ -1351,7 +1571,7 @@ show_menu() {
             read -rp "Enter project number: " num
             
             if [ -z "$num" ] || ! [[ "$num" =~ ^[0-9]+$ ]]; then
-                msg err "Must be number"
+                msg err "Nomor harus angka!"
                 wait_key
                 return
             fi
@@ -1386,7 +1606,15 @@ main() {
         msg info "Debug mode enabled"
     fi
     
-    check_deps || msg warn "Install: pkg install nodejs git postgresql rsync"
+    # Cleanup corrupted log files on startup
+    if ls "$LOG_DIR"/_*.log >/dev/null 2>&1 || ls "$LOG_DIR"/_*.pid >/dev/null 2>&1; then
+        msg warn "Membersihkan log files yang rusak..."
+        rm -f "$LOG_DIR"/_*.log "$LOG_DIR"/_*.pid "$LOG_DIR"/_*.port 2>/dev/null || true
+        msg ok "Cleanup selesai"
+        sleep 1
+    fi
+    
+    check_deps || msg warn "Install dependencies: pkg install nodejs git postgresql rsync"
     
     while true; do
         show_menu
