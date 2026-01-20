@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================================
-# DApps Localhost Launcher - Improved v2.1.0
+# DApps Localhost Launcher - Improved v2.1.0 - FIXED
 # Platform: Android Termux
 # Tujuan: Launcher yang lebih berguna untuk developer (multi-start command,
 #        auto-detect package manager, update from git, sync, restart, tail logs)
@@ -16,7 +16,7 @@ PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 PROJECTS_DIR="${HOME:-$HOME}/dapps-projects"
 CONFIG_FILE="${HOME:-$HOME}/.dapps.conf"
 LOG_DIR="${HOME:-$HOME}/.dapps-logs"
-LAUNCHER_VERSION="2.1.0"
+LAUNCHER_VERSION="2.1.0-FIXED"
 
 # Colors
 R="\033[31m"; G="\033[32m"; Y="\033[33m"; B="\033[34m"; C="\033[36m"; X="\033[0m"; BOLD="\033[1m"
@@ -41,7 +41,7 @@ msg() {
 header() {
     clear
     echo -e "${C}${BOLD}╔════════════════════════════════════════════════════════╗${X}"
-    echo -e "${C}${BOLD}║        DApps Localhost Launcher — Improved v${LAUNCHER_VERSION}        ║${X}"
+    echo -e "${C}${BOLD}║     DApps Localhost Launcher — v${LAUNCHER_VERSION}     ║${X}"
     echo -e "${C}${BOLD}╚════════════════════════════════════════════════════════╝${X}\n"
 }
 
@@ -302,6 +302,14 @@ detect_start_command() {
 }
 
 # ---------------------------
+# CRITICAL: Check if path is in Android external storage
+# ---------------------------
+is_external_storage() {
+    local path="$1"
+    [[ "$path" =~ ^/storage/emulated/ ]] || [[ "$path" =~ ^/sdcard/ ]]
+}
+
+# ---------------------------
 # Project flows
 # ---------------------------
 add_project() {
@@ -332,6 +340,39 @@ add_project() {
         2)
             read -rp "Path folder (contoh: $HOME/my-project): " project_path
             [ -z "$project_path" ] && { msg err "Path kosong"; wait_key; return; }
+            
+            # CRITICAL: Check if path is in Android external storage
+            if is_external_storage "$project_path"; then
+                msg err "❌ FATAL: Project di external storage Android terdeteksi!"
+                echo -e "\n${Y}${BOLD}MASALAH:${X}"
+                echo -e "${Y}• Android TIDAK MENGIZINKAN symlink di /storage/emulated/${X}"
+                echo -e "${Y}• npm membutuhkan symlink untuk node_modules/.bin/${X}"
+                echo -e "${Y}• Install akan GAGAL dengan error EACCES${X}\n"
+                
+                echo -e "${BOLD}${G}SOLUSI OTOMATIS:${X}"
+                echo -e "Script akan memindahkan project ke Termux home\n"
+                
+                if confirm "Pindahkan project ke $HOME/projects/ ?"; then
+                    local new_path="$HOME/projects/$(basename "$project_path")"
+                    mkdir -p "$HOME/projects"
+                    msg info "Memindahkan project..."
+                    
+                    # Move with progress
+                    if mv "$project_path" "$new_path" 2>/dev/null; then
+                        project_path="$new_path"
+                        msg ok "✅ Project berhasil dipindahkan ke: $project_path"
+                        sleep 1
+                    else
+                        msg err "Gagal memindahkan. Coba manual:"
+                        echo -e "${C}mv \"$project_path\" \"$new_path\"${X}"
+                        wait_key; return
+                    fi
+                else
+                    msg warn "Dibatalkan. Project HARUS di Termux home untuk bisa jalan!"
+                    wait_key; return
+                fi
+            fi
+            
             [ ! -d "$project_path" ] && { msg err "Folder tidak ditemukan"; wait_key; return; }
             ;;
         *)
@@ -369,21 +410,62 @@ add_project() {
 install_deps() {
     local name="$1"
     load_project "$name" || { msg err "Project tidak ditemukan"; return 1; }
+    
+    # CRITICAL: Double-check if project is in external storage
+    if is_external_storage "$PROJECT_PATH"; then
+        msg err "❌ FATAL: Project masih di external storage!"
+        echo -e "\n${Y}${BOLD}PATH SAAT INI:${X} $PROJECT_PATH"
+        echo -e "${Y}npm TIDAK BISA install di /storage/emulated/${X}\n"
+        
+        echo -e "${BOLD}${G}PERBAIKI:${X}"
+        echo "1. Pindahkan project ke Termux home:"
+        echo -e "   ${C}mv \"$PROJECT_PATH\" \"$HOME/projects/$(basename "$PROJECT_PATH")\"${X}"
+        echo ""
+        echo "2. Edit config project (menu 4) dengan path baru"
+        echo ""
+        echo "3. Jalankan install ulang"
+        wait_key
+        return 1
+    fi
+    
     msg info "Installing dependencies untuk $PROJECT_NAME..."
+    local pkg_mgr=$(detect_pkg_manager)
+    
     for spec in "Frontend:$FE_DIR:$FE_PORT:$FE_CMD" "Backend:$BE_DIR:$BE_PORT:$BE_CMD"; do
         local label=${spec%%:*}
         local dir=${spec#*:}; dir=${dir%%:*}
         local full="$PROJECT_PATH/$dir"
-        if [ -d "$full" ] && [ -f "$full/package.json" ]; then
-            msg info "Installing $label..."
-            (cd "$full" && detect_pkg_manager >/dev/null 2>&1 && $(detect_pkg_manager) install) || {
-                msg warn "$label install failed"
-                continue
-            }
-            msg ok "$label dependencies installed"
-        else
-            msg warn "$label tidak ditemukan atau tidak ada package.json"
+        
+        if [ ! -d "$full" ]; then
+            msg warn "$label folder tidak ditemukan: $full"
+            continue
         fi
+        
+        if [ ! -f "$full/package.json" ]; then
+            msg warn "$label tidak ada package.json, skip"
+            continue
+        fi
+        
+        msg info "Installing $label dengan $pkg_mgr..."
+        
+        # Try install with fallback
+        (cd "$full" && {
+            # Try normal install first
+            if $pkg_mgr install 2>/dev/null; then
+                msg ok "$label dependencies installed"
+            else
+                # Fallback dengan --no-bin-links
+                msg warn "Retry dengan --no-bin-links..."
+                if $pkg_mgr install --no-bin-links; then
+                    msg ok "$label dependencies installed (no-bin-links)"
+                else
+                    msg err "$label install failed"
+                fi
+            fi
+        }) || {
+            msg err "$label install failed completely"
+            continue
+        }
     done
 }
 
@@ -406,6 +488,13 @@ run_project() {
     # Validate paths
     if [ ! -d "$PROJECT_PATH" ]; then
         msg err "Project folder tidak ditemukan: $PROJECT_PATH"
+        wait_key; return
+    fi
+    
+    # CRITICAL: Check external storage
+    if is_external_storage "$PROJECT_PATH"; then
+        msg err "❌ Project di external storage, tidak bisa dijalankan!"
+        echo -e "\n${Y}Pindahkan dulu ke Termux home (menu 4 - Edit Project)${X}\n"
         wait_key; return
     fi
 
@@ -467,6 +556,12 @@ show_status() {
     while IFS='|' read -r name path _; do
         [ -z "$name" ] && continue
         echo -e "${BOLD}$name${X}"
+        
+        # Check if in external storage
+        if is_external_storage "$path"; then
+            echo -e "  ${R}⚠️  WARNING: Di external storage (tidak bisa jalan!)${X}"
+        fi
+        
         for svc in "frontend" "backend"; do
             local pid_file="$LOG_DIR/${name}_${svc}.pid"
             local port_file="$LOG_DIR/${name}_${svc}.port"
@@ -537,9 +632,39 @@ edit_project() {
     selected=$(sed -n "${num}p" "$CONFIG_FILE" 2>/dev/null | cut -d'|' -f1)
     [ -z "$selected" ] && { msg err "Pilihan tidak valid"; wait_key; return; }
     load_project "$selected" || { msg err "Gagal load project"; wait_key; return; }
+    
+    # Show warning if in external storage
+    if is_external_storage "$PROJECT_PATH"; then
+        echo -e "${Y}${BOLD}⚠️  WARNING: Project di external storage!${X}\n"
+        echo -e "${Y}Pindahkan ke Termux home untuk bisa jalan${X}\n"
+    fi
+    
     echo -e "Edit nilai kosong untuk tetap sama\n"
     read -rp "Nama project [$PROJECT_NAME]: " name; name=${name:-$PROJECT_NAME}
-    read -rp "Path project [$PROJECT_PATH]: " path; path=${path:-$PROJECT_PATH}
+    read -rp "Path project [$PROJECT_PATH]: " path
+    
+    # Validate new path if provided
+    if [ -n "$path" ]; then
+        if is_external_storage "$path"; then
+            msg err "Path baru masih di external storage!"
+            if confirm "Auto-pindahkan ke $HOME/projects/?"; then
+                local new_path="$HOME/projects/$(basename "$path")"
+                mkdir -p "$HOME/projects"
+                if [ -d "$path" ] && mv "$path" "$new_path" 2>/dev/null; then
+                    path="$new_path"
+                    msg ok "Dipindahkan ke: $path"
+                else
+                    msg warn "Gagal pindahkan otomatis, gunakan path lama"
+                    path="$PROJECT_PATH"
+                fi
+            else
+                path="$PROJECT_PATH"
+            fi
+        fi
+    else
+        path="$PROJECT_PATH"
+    fi
+    
     read -rp "Folder frontend [$FE_DIR]: " fe_dir; fe_dir=${fe_dir:-$FE_DIR}
     read -rp "Folder backend  [$BE_DIR]: " be_dir; be_dir=${be_dir:-$BE_DIR}
     read -rp "Port frontend [$FE_PORT]: " fe_port; fe_port=${fe_port:-$FE_PORT}
@@ -648,6 +773,99 @@ self_uninstall() {
 }
 
 # ---------------------------
+# Diagnostic tool
+# ---------------------------
+diagnostic_check() {
+    header
+    echo -e "${BOLD}═══ Diagnostic & Fix Tool ═══${X}\n"
+    
+    msg info "Checking all projects..."
+    echo ""
+    
+    [ ! -f "$CONFIG_FILE" ] && { msg warn "Belum ada project"; wait_key; return; }
+    
+    local fixed=0
+    local issues=0
+    
+    while IFS='|' read -r name path fe_dir be_dir fe_port be_port fe_cmd be_cmd auto_restart; do
+        [ -z "$name" ] && continue
+        
+        echo -e "${BOLD}Checking: $name${X}"
+        
+        # Check 1: External storage
+        if is_external_storage "$path"; then
+            issues=$((issues+1))
+            echo -e "  ${R}✗ Di external storage (CRITICAL!)${X}"
+            echo -e "    Path: $path"
+            
+            if confirm "  Pindahkan ke $HOME/projects/?"; then
+                local new_path="$HOME/projects/$(basename "$path")"
+                mkdir -p "$HOME/projects"
+                
+                if [ -d "$path" ] && mv "$path" "$new_path" 2>/dev/null; then
+                    # Update config
+                    save_project "$name" "$new_path" "$fe_dir" "$be_dir" "$fe_port" "$be_port" "$fe_cmd" "$be_cmd" "$auto_restart"
+                    msg ok "  ✓ Dipindahkan ke: $new_path"
+                    fixed=$((fixed+1))
+                else
+                    msg err "  ✗ Gagal memindahkan"
+                fi
+            fi
+        else
+            echo -e "  ${G}✓ Path OK${X}"
+        fi
+        
+        # Check 2: Directory exists
+        if [ ! -d "$path" ]; then
+            issues=$((issues+1))
+            echo -e "  ${R}✗ Directory tidak ditemukan${X}"
+        else
+            echo -e "  ${G}✓ Directory exists${X}"
+        fi
+        
+        # Check 3: Frontend/Backend folders
+        if [ -d "$path/$fe_dir" ]; then
+            echo -e "  ${G}✓ Frontend folder OK${X}"
+        else
+            issues=$((issues+1))
+            echo -e "  ${Y}! Frontend folder tidak ada: $fe_dir${X}"
+        fi
+        
+        if [ -d "$path/$be_dir" ]; then
+            echo -e "  ${G}✓ Backend folder OK${X}"
+        else
+            issues=$((issues+1))
+            echo -e "  ${Y}! Backend folder tidak ada: $be_dir${X}"
+        fi
+        
+        # Check 4: node_modules
+        local fe_nm="$path/$fe_dir/node_modules"
+        local be_nm="$path/$be_dir/node_modules"
+        
+        if [ -d "$fe_nm" ]; then
+            echo -e "  ${G}✓ Frontend dependencies installed${X}"
+        else
+            echo -e "  ${Y}! Frontend dependencies belum install${X}"
+        fi
+        
+        if [ -d "$be_nm" ]; then
+            echo -e "  ${G}✓ Backend dependencies installed${X}"
+        else
+            echo -e "  ${Y}! Backend dependencies belum install${X}"
+        fi
+        
+        echo ""
+    done < "$CONFIG_FILE"
+    
+    echo -e "${BOLD}═══════════════════════════════${X}"
+    echo -e "Total Issues: ${R}$issues${X}"
+    echo -e "Fixed: ${G}$fixed${X}"
+    echo -e "${BOLD}═══════════════════════════════${X}"
+    
+    wait_key
+}
+
+# ---------------------------
 # Main menu
 # ---------------------------
 show_menu() {
@@ -663,11 +881,12 @@ show_menu() {
     echo "8. 📝 Lihat Logs"
     echo "9. ✨ Create Scaffold (baru)"
     echo "10. 🔁 Export Config"
-    echo "11. ⬆️  Update Launcher (self-update)"
-    echo "12. 🗑️  Uninstall Launcher"
+    echo "11. 🔧 Diagnostic & Fix Tool"
+    echo "12. ⬆️  Update Launcher (self-update)"
+    echo "13. 🗑️  Uninstall Launcher"
     echo "0. 🚪 Keluar"
     echo -e "\n${BOLD}════════════════════════════════════${X}"
-    read -rp "Pilih menu (0-12): " choice
+    read -rp "Pilih menu (0-13): " choice
     case "$choice" in
         1) run_project ;;
         2) stop_project ;;
@@ -690,8 +909,9 @@ show_menu() {
         8) view_logs ;;
         9) create_scaffold ;;
         10) export_config ;;
-        11) self_update ;;
-        12) self_uninstall ;;
+        11) diagnostic_check ;;
+        12) self_update ;;
+        13) self_uninstall ;;
         0)
             header
             msg info "Terima kasih! Keluar..."
@@ -701,12 +921,23 @@ show_menu() {
     esac
 }
 
+# ---------------------------
 # Entry point
-if ! check_deps; then
-    msg warn "Some dependencies are missing — beberapa fitur mungkin terbatas."
-fi
+# ---------------------------
+main() {
+    # Initial dependency check
+    if ! check_deps; then
+        msg warn "Some dependencies are missing — beberapa fitur mungkin terbatas."
+        echo ""
+    fi
+    
+    # Main loop
+    while true; do
+        show_menu
+    done
+}
 
-# If script executed from installer context, allow running directly as installed
-show_menu
+# Run main
+main
 
 # End of file
