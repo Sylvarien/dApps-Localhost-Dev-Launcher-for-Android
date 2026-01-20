@@ -596,9 +596,18 @@ start_service() {
     local cmd="$4"
     local label="$5"
     
+    # CRITICAL: Validate ID
+    if [ -z "$id" ]; then
+        msg err "INTERNAL ERROR: Project ID kosong di start_service!"
+        return 1
+    fi
+    
     local pid_file="$LOG_DIR/${id}_${label}.pid"
     local log_file="$LOG_DIR/${id}_${label}.log"
     local port_file="$LOG_DIR/${id}_${label}.port"
+    
+    # Debug info
+    msg info "Debug: ID=$id, Label=$label, LogFile=$log_file"
     
     # Check if already running
     if [ -f "$pid_file" ]; then
@@ -903,10 +912,18 @@ create_db_from_env() {
 # ---------------------------
 run_project_by_id() {
     local id="$1"
+    
+    # CRITICAL: Validate ID first
+    if [ -z "$id" ]; then
+        msg err "Project ID tidak boleh kosong!"
+        wait_key
+        return 1
+    fi
+    
     load_project "$id" || {
         msg err "Project not found"
         wait_key
-        return
+        return 1
     }
     
     header
@@ -963,13 +980,19 @@ run_project_by_id() {
     # Start services
     echo ""
     msg info "Starting services..."
+    msg info "Debug: Project ID = '$id'"
     echo ""
     
-    start_service "$id" "$FE_DIR" "${FE_PORT:-3000}" "${FE_CMD:-auto}" "frontend"
+    # CRITICAL: Pass ID explicitly
+    start_service "$id" "$FE_DIR" "${FE_PORT:-3000}" "${FE_CMD:-auto}" "frontend" || {
+        msg err "Frontend gagal start"
+    }
     
     if [ "$has_backend" = true ]; then
         echo ""
-        start_service "$id" "$BE_DIR" "${BE_PORT:-8000}" "${BE_CMD:-auto}" "backend"
+        start_service "$id" "$BE_DIR" "${BE_PORT:-8000}" "${BE_CMD:-auto}" "backend" || {
+            msg err "Backend gagal start"
+        }
     fi
     
     echo ""
@@ -1213,10 +1236,19 @@ view_logs() {
     
     echo ""
     read -rp "Enter project ID: " id
-    [ -z "$id" ] && {
+    
+    # Validate
+    if [ -z "$id" ]; then
+        msg err "ID tidak boleh kosong!"
         wait_key
         return
-    }
+    fi
+    
+    if ! [[ "$id" =~ ^[0-9]+$ ]]; then
+        msg err "ID harus angka!"
+        wait_key
+        return
+    fi
     
     load_project "$id" || {
         msg err "Project not found"
@@ -1225,31 +1257,41 @@ view_logs() {
     }
     
     echo ""
-    echo -e "${BOLD}=== Logs for: $PROJECT_NAME ===${X}"
+    echo -e "${BOLD}=== Logs for: $PROJECT_NAME (ID: $id) ===${X}"
     echo ""
     
+    local fe_log="$LOG_DIR/${id}_frontend.log"
+    local be_log="$LOG_DIR/${id}_backend.log"
+    local sync_log="$LOG_DIR/${id}_sync.log"
+    
     echo -e "${C}--- Frontend Log ---${X}"
-    if [ -f "$LOG_DIR/${id}_frontend.log" ]; then
-        tail -n 50 "$LOG_DIR/${id}_frontend.log"
+    echo "File: $fe_log"
+    if [ -f "$fe_log" ]; then
+        tail -n 50 "$fe_log"
     else
-        echo "(no log)"
+        echo "(no log yet)"
     fi
     
     echo ""
     echo -e "${C}--- Backend Log ---${X}"
-    if [ -f "$LOG_DIR/${id}_backend.log" ]; then
-        tail -n 50 "$LOG_DIR/${id}_backend.log"
+    echo "File: $be_log"
+    if [ -f "$be_log" ]; then
+        tail -n 50 "$be_log"
     else
-        echo "(no log)"
+        echo "(no log yet)"
     fi
     
     echo ""
     echo -e "${C}--- Sync Log ---${X}"
-    if [ -f "$LOG_DIR/${id}_sync.log" ]; then
-        tail -n 30 "$LOG_DIR/${id}_sync.log"
+    echo "File: $sync_log"
+    if [ -f "$sync_log" ]; then
+        tail -n 30 "$sync_log"
     else
-        echo "(no log)"
+        echo "(no log yet)"
     fi
+    
+    echo ""
+    echo -e "${Y}Tip: cat $fe_log untuk lihat full log${X}"
     
     wait_key
 }
@@ -1343,6 +1385,25 @@ diagnose_and_fix() {
     fi
     
     echo ""
+    msg info "Checking for corrupted log files..."
+    local corrupted_count=0
+    for logfile in "$LOG_DIR"/_*.log "$LOG_DIR"/_*.pid; do
+        if [ -f "$logfile" ]; then
+            corrupted_count=$((corrupted_count + 1))
+            msg warn "Found corrupted: $logfile"
+        fi
+    done
+    
+    if [ $corrupted_count -gt 0 ]; then
+        if confirm "Remove $corrupted_count corrupted log files?"; then
+            rm -f "$LOG_DIR"/_*.log "$LOG_DIR"/_*.pid "$LOG_DIR"/_*.port 2>/dev/null || true
+            msg ok "Corrupted files removed"
+        fi
+    else
+        msg ok "No corrupted log files"
+    fi
+    
+    echo ""
     msg info "Logs directory: $LOG_DIR"
     msg info "Projects directory: $PROJECTS_DIR"
     msg info "Config file: $CONFIG_FILE"
@@ -1420,7 +1481,22 @@ show_menu() {
             }
             echo ""
             read -rp "Enter project ID: " id
-            [ -n "$id" ] && run_project_by_id "$id"
+            
+            # Validate input
+            if [ -z "$id" ]; then
+                msg err "Project ID tidak boleh kosong!"
+                wait_key
+                return
+            fi
+            
+            # Check if numeric
+            if ! [[ "$id" =~ ^[0-9]+$ ]]; then
+                msg err "Project ID harus angka!"
+                wait_key
+                return
+            fi
+            
+            run_project_by_id "$id"
             ;;
         4)
             header
@@ -1431,7 +1507,21 @@ show_menu() {
             }
             echo ""
             read -rp "Enter project ID: " id
-            [ -n "$id" ] && stop_project_by_id "$id"
+            
+            # Validate input
+            if [ -z "$id" ]; then
+                msg err "Project ID tidak boleh kosong!"
+                wait_key
+                return
+            fi
+            
+            if ! [[ "$id" =~ ^[0-9]+$ ]]; then
+                msg err "Project ID harus angka!"
+                wait_key
+                return
+            fi
+            
+            stop_project_by_id "$id"
             ;;
         5)
             header
@@ -1442,7 +1532,15 @@ show_menu() {
             }
             echo ""
             read -rp "Enter project ID: " id
-            [ -n "$id" ] && install_deps "$id"
+            
+            # Validate
+            if [ -z "$id" ] || ! [[ "$id" =~ ^[0-9]+$ ]]; then
+                msg err "Project ID harus angka!"
+                wait_key
+                return
+            fi
+            
+            install_deps "$id"
             wait_key
             ;;
         6) sync_project ;;
@@ -1467,6 +1565,14 @@ show_menu() {
 # Main
 # ---------------------------
 main() {
+    # Cleanup corrupted log files on startup
+    if ls "$LOG_DIR"/_*.log >/dev/null 2>&1 || ls "$LOG_DIR"/_*.pid >/dev/null 2>&1; then
+        msg warn "Membersihkan log files yang rusak..."
+        rm -f "$LOG_DIR"/_*.log "$LOG_DIR"/_*.pid "$LOG_DIR"/_*.port 2>/dev/null || true
+        msg ok "Cleanup selesai"
+        sleep 1
+    fi
+    
     check_deps || msg warn "Install dependencies: pkg install nodejs git postgresql rsync"
     
     while true; do
