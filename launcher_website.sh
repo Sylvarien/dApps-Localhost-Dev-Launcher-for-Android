@@ -10,6 +10,14 @@
 # ✅ Multi-framework support (Vite/Next/CRA/Static/Express/Nest)
 # ✅ PostgreSQL integration
 # ✅ Database viewer
+#
+# PERBAIKAN DAN TAMBAHAN (v4.0.1 MVP Grade):
+# ✅ Perbaikan programmatic: Handle missing DB_NAME di .env dengan prompt user untuk set default DB_NAME jika tidak ada.
+# ✅ Otomatis jalankan npm audit fix --force jika ada vulnerabilities setelah install.
+# ✅ Tambah fitur self-update di menu (jalankan curl installer).
+# ✅ Tambah fitur tambahan: Monitor & Auto-Restart (sangat dibutuhkan untuk stability).
+# ✅ Tambah fitur tambahan: Backup Project (untuk keamanan data sebelum sync/update).
+# ✅ Pastikan kode clean, error handling lebih baik, MVP grade: Fokus pada core functionality dengan reliability.
 # ============================================================================
 
 set -euo pipefail
@@ -21,7 +29,7 @@ PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 PROJECTS_DIR="$HOME/dapps-projects"
 CONFIG_FILE="$HOME/.dapps.conf"
 LOG_DIR="$HOME/.dapps-logs"
-LAUNCHER_VERSION="4.0.0"
+LAUNCHER_VERSION="4.0.1"  # Update version for fixes
 
 DB_VIEWER_DIR="${DB_VIEWER_DIR:-$HOME/paxiforge-db-viewer}"
 DB_VIEWER_PORT="${DB_VIEWER_PORT:-8081}"
@@ -316,7 +324,7 @@ sync_project() {
                 line_num=$((line_num + 1))
                 [ -z "$name" ] && continue
                 if [ -n "$source_path" ] && [ -d "$source_path" ]; then
-                    msg info "Syncing $name (#$num)"
+                    msg info "Syncing $name (#$line_num)"
                     sync_project_by_num "$line_num" || msg warn "Failed: $name"
                 else
                     msg warn "Skip $name (#$line_num) - no source_path"
@@ -415,8 +423,8 @@ prompt_open_path_after_list() {
         echo "BE Dir      : ${BE_DIR:-(none)}"
         echo "FE Port     : ${FE_PORT:-3000}"
         echo "BE Port     : ${BE_PORT:-8000}"
-        echo "FE Command  : ${FE_CMD:-npx serve .}"
-        echo "BE Command  : ${BE_CMD:-npm start}"
+        echo "FE Command  : ${FE_CMD:-auto}"
+        echo "BE Command  : ${BE_CMD:-auto}"
         echo "Auto Restart: ${AUTO_RESTART:-0}"
         echo "Auto Sync   : ${AUTO_SYNC:-0}"
         wait_key
@@ -781,6 +789,12 @@ install_deps() {
         
         msg info "Installing $label..."
         (cd "$full" && npm install) && msg ok "$label installed" || msg err "$label install failed"
+        
+        # Perbaikan programmatic: Jalankan npm audit fix --force jika ada vulnerabilities
+        if (cd "$full" && npm audit --json | grep -q '"severity"'); then
+            msg warn "Vulnerabilities detected in $label. Fixing..."
+            (cd "$full" && npm audit fix --force) && msg ok "Vulnerabilities fixed" || msg err "Fix failed"
+        fi
     done
 }
 
@@ -899,10 +913,18 @@ create_db_from_env() {
     
     IFS='|' read -r DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD <<< "$parsed"
     
-    [ -z "$DB_NAME" ] && {
+    if [ -z "$DB_NAME" ]; then
         msg warn "DB_NAME tidak ditemukan di .env"
-        return 1
-    }
+        # Perbaikan programmatic: Prompt user untuk set DB_NAME default
+        read -rp "Masukkan DB_NAME default (contoh: paxi_db): " DB_NAME
+        if [ -z "$DB_NAME" ]; then
+            msg err "DB_NAME diperlukan. Skip auto-create."
+            return 1
+        fi
+        # Tambahkan ke .env secara programmatic
+        echo "DB_NAME=$DB_NAME" >> "$envfile"
+        msg ok "DB_NAME ditambahkan ke .env: $DB_NAME"
+    fi
     
     if [ "$DB_HOST" != "127.0.0.1" ] && [ "$DB_HOST" != "localhost" ]; then
         msg warn "DB_HOST bukan lokal ($DB_HOST). Skip auto-create."
@@ -999,6 +1021,10 @@ run_project_by_num() {
     
     echo ""
     msg ok "Project started!"
+    # Tambah fitur monitor auto-restart jika enabled
+    if [ "$AUTO_RESTART" = "1" ]; then
+        monitor_project "$num" &
+    fi
     wait_key
 }
 
@@ -1414,6 +1440,74 @@ diagnose_and_fix() {
 }
 
 # ---------------------------
+# Fitur Tambahan: Self Update
+# ---------------------------
+self_update() {
+    header
+    echo -e "${BOLD}Self Update Launcher${X}\n"
+    if confirm "Update launcher sekarang?"; then
+        curl -fsSL https://raw.githubusercontent.com/Sylvarien/dApps-Localhost-Dev-Launcher-for-Android/main/installer.sh | bash
+        msg ok "Update selesai. Restart launcher."
+        exit 0
+    else
+        msg info "Update dibatalkan."
+    fi
+    wait_key
+}
+
+# ---------------------------
+# Fitur Tambahan: Monitor & Auto-Restart (sangat dibutuhkan untuk stability)
+# ---------------------------
+monitor_project() {
+    local num="$1"
+    load_project "$num" || return 1
+    
+    while true; do
+        local fe_pid_file="$LOG_DIR/${num}_frontend.pid"
+        local be_pid_file="$LOG_DIR/${num}_backend.pid"
+        
+        local fe_pid=$(cat "$fe_pid_file" 2>/dev/null || true)
+        local be_pid=$(cat "$be_pid_file" 2>/dev/null || true)
+        
+        if [ -n "$fe_pid" ] && ! kill -0 "$fe_pid" 2>/dev/null; then
+            msg warn "Frontend crashed! Restarting..."
+            start_service "$num" "$FE_DIR" "${FE_PORT:-3000}" "${FE_CMD:-auto}" "frontend"
+        fi
+        
+        if [ -n "$be_pid" ] && ! kill -0 "$be_pid" 2>/dev/null; then
+            msg warn "Backend crashed! Restarting..."
+            start_service "$num" "$BE_DIR" "${BE_PORT:-8000}" "${BE_CMD:-auto}" "backend"
+        fi
+        
+        sleep 30  # Check every 30 seconds
+    done
+}
+
+# ---------------------------
+# Fitur Tambahan: Backup Project (untuk keamanan sebelum sync/update)
+# ---------------------------
+backup_project() {
+    header
+    echo -e "${BOLD}Backup Project${X}\n"
+    
+    list_projects_table || { msg warn "No projects"; wait_key; return; }
+    
+    echo ""
+    read -rp "Enter project number to backup: " num
+    [ -z "$num" ] && { msg err "Number required"; wait_key; return; }
+    
+    load_project "$num" || { msg err "Project not found"; wait_key; return; }
+    
+    local backup_dir="$HOME/dapps-backups/$PROJECT_NAME_$(date +%F_%H%M%S)"
+    mkdir -p "$backup_dir"
+    
+    msg info "Backing up $PROJECT_NAME to $backup_dir"
+    cp -r "$PROJECT_PATH" "$backup_dir" && msg ok "Backup selesai" || msg err "Backup gagal"
+    
+    wait_key
+}
+
+# ---------------------------
 # Header
 # ---------------------------
 header() {
@@ -1464,9 +1558,11 @@ show_menu() {
     echo " 9. 📤 Export Config"
     echo "10. 🔧 Diagnostics"
     echo "11. ✏️  Edit Project Config"
+    echo "12. 🔄 Self Update"  # Tambah menu self-update
+    echo "13. 🛡️ Backup Project"  # Tambah fitur backup
     echo " 0. 🚪 Exit"
     echo -e "\n${BOLD}═══════════════════════════════════${X}"
-    read -rp "Select (0-11): " choice
+    read -rp "Select (0-13): " choice
     
     case "$choice" in
         1)
@@ -1585,6 +1681,8 @@ show_menu() {
         9) export_config_json; wait_key ;;
         10) diagnose_and_fix ;;
         11) edit_project_config ;;
+        12) self_update ;;  # Tambah self-update
+        13) backup_project ;;  # Tambah backup
         0)
             header
             msg info "Goodbye!"
