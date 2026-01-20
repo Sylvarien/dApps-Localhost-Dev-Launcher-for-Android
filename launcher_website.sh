@@ -110,8 +110,8 @@ save_project() {
     local fe_dir="$5" be_dir="$6" fe_port="$7" be_port="$8"
     local fe_cmd="$9" be_cmd="${10}" auto_restart="${11}" auto_sync="${12}"
     
-    # Remove old entry
-    grep -v "^$id|" "$CONFIG_FILE" 2>/dev/null > "$CONFIG_FILE.tmp" || true
+    # Remove old entry using awk for safe ID matching
+    awk -F'|' -v id="$id" '$1 != id' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" 2>/dev/null || true
     mv "$CONFIG_FILE.tmp" "$CONFIG_FILE" 2>/dev/null || true
     
     # Save new entry
@@ -130,14 +130,17 @@ load_project() {
         return 1
     fi
     
-    # Escape special chars in grep
-    line=$(grep "^${id}|" "$CONFIG_FILE" 2>/dev/null | head -n1 || true)
+    # FIXED: Use fixed string match, not regex - handle special chars
+    # Escape ID properly and use -F for fixed string
+    line=$(awk -F'|' -v id="$id" '$1 == id' "$CONFIG_FILE" 2>/dev/null | head -n1 || true)
     
     if [ -z "$line" ]; then
         msg err "Project ID $id tidak ditemukan di config"
+        msg info "Debug: Mencari ID '$id' di $CONFIG_FILE"
         return 1
     fi
     
+    # Parse line dengan IFS
     IFS='|' read -r PROJECT_ID PROJECT_NAME PROJECT_PATH SOURCE_PATH \
                     FE_DIR BE_DIR FE_PORT BE_PORT FE_CMD BE_CMD \
                     AUTO_RESTART AUTO_SYNC <<< "$line"
@@ -145,6 +148,11 @@ load_project() {
     # Validate loaded data
     if [ -z "$PROJECT_ID" ]; then
         msg err "Config corrupted: PROJECT_ID kosong untuk line: $line"
+        return 1
+    fi
+    
+    if [ "$PROJECT_ID" != "$id" ]; then
+        msg err "ID mismatch: diminta $id, dapat $PROJECT_ID"
         return 1
     fi
     
@@ -1253,8 +1261,8 @@ delete_project() {
         rm -rf "$PROJECT_PATH" && msg ok "Files deleted"
     fi
     
-    # Remove from config
-    grep -v "^$id|" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" || true
+    # Remove from config using awk for safe matching
+    awk -F'|' -v id="$id" '$1 != id' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" || true
     mv "$CONFIG_FILE.tmp" "$CONFIG_FILE" 2>/dev/null || true
     
     msg ok "Project removed from launcher"
@@ -1528,9 +1536,10 @@ show_menu() {
     echo "10. 🔧 Diagnostics"
     echo "11. ✏️  Edit Project Config"
     echo "12. 🛠️  Fix Config File (repair)"
+    echo "13. 🧪 Test Load Project (debug)"
     echo " 0. 🚪 Exit"
     echo -e "\n${BOLD}═══════════════════════════════════${X}"
-    read -rp "Select (0-12): " choice
+    read -rp "Select (0-13): " choice
     
     case "$choice" in
         1)
@@ -1541,51 +1550,75 @@ show_menu() {
             ;;
         2) add_project ;;
         3)
-            header
+            clear
+            echo -e "${C}${BOLD}╔════════════════════════════════════════════════════════╗${X}"
+            echo -e "${C}${BOLD}║              START PROJECT                             ║${X}"
+            echo -e "${C}${BOLD}╚════════════════════════════════════════════════════════╝${X}\n"
             
             # Check if there are projects first
             if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
                 msg warn "Belum ada project!"
                 msg info "Tambahkan project dulu dengan menu 2 (Add Project)"
                 wait_key
-                return
+                continue
+            fi
+            
+            # Count projects
+            local project_count=$(grep -c "^[0-9]" "$CONFIG_FILE" 2>/dev/null || echo "0")
+            if [ "$project_count" -eq 0 ]; then
+                msg warn "Config file ada tapi tidak ada project valid"
+                msg info "Tambahkan project dengan menu 2"
+                wait_key
+                continue
             fi
             
             # Show list
-            list_projects_table || {
-                msg warn "No projects"
+            if ! list_projects_table; then
+                msg err "Gagal menampilkan project list"
                 wait_key
-                return
-            }
+                continue
+            fi
             
             echo ""
-            echo -e "${Y}Masukkan ID project yang ingin di-start${X}"
-            read -rp "Enter project ID: " id
+            echo -e "${BOLD}${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
+            echo -e "${BOLD}Pilih project yang ingin di-start${X}"
+            echo -e "${BOLD}${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
+            echo ""
+            read -rp "Masukkan ID project (atau 0 untuk batal): " id
             
-            # Validate input
+            # Check for cancel
+            if [ "$id" = "0" ]; then
+                msg info "Dibatalkan"
+                sleep 1
+                continue
+            fi
+            
+            # Validate input - CRITICAL CHECK
             if [ -z "$id" ]; then
-                msg err "Project ID tidak boleh kosong!"
-                msg info "Lihat kolom ID di table atas"
+                msg err "ID tidak boleh kosong!"
+                msg info "Lihat kolom ID di table atas dan masukkan angkanya"
                 wait_key
-                return
+                continue
             fi
             
             # Check if numeric
             if ! [[ "$id" =~ ^[0-9]+$ ]]; then
-                msg err "Project ID harus angka! Anda masukkan: '$id'"
-                msg info "Contoh: ketik 1 untuk project dengan ID 1"
+                msg err "ID harus berupa ANGKA!"
+                msg err "Anda memasukkan: '$id'"
+                msg info "Contoh yang benar: ketik 1 (tanpa spasi atau karakter lain)"
                 wait_key
-                return
+                continue
             fi
             
-            # Check if ID exists
-            if ! grep -q "^${id}|" "$CONFIG_FILE" 2>/dev/null; then
-                msg err "Project ID $id tidak ditemukan!"
-                msg info "Lihat ID yang tersedia di table atas"
+            # Check if ID exists in config - use awk for safe matching
+            if ! awk -F'|' -v id="$id" '$1 == id {found=1} END {exit !found}' "$CONFIG_FILE" 2>/dev/null; then
+                msg err "Project dengan ID $id tidak ditemukan!"
+                msg info "Cek kembali ID yang tersedia di table"
                 wait_key
-                return
+                continue
             fi
             
+            # SAFE to call with validated ID
             run_project_by_id "$id"
             ;;
         4)
@@ -1670,6 +1703,7 @@ show_menu() {
         10) diagnose_and_fix ;;
         11) edit_project_config ;;
         12) fix_config_file ;;
+        13) test_load_project ;;
         0)
             header
             msg info "Goodbye!"
@@ -1749,15 +1783,108 @@ fix_config_file() {
 }
 
 # ---------------------------
+# Test load project (debug)
+# ---------------------------
+test_load_project() {
+    header
+    echo -e "${BOLD}Test Load Project (Debug Mode)${X}\n"
+    
+    if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
+        msg err "Config file kosong atau tidak ada"
+        wait_key
+        return
+    fi
+    
+    echo "Config file contents:"
+    cat -n "$CONFIG_FILE"
+    echo ""
+    
+    read -rp "Enter project ID to test: " test_id
+    
+    if [ -z "$test_id" ]; then
+        msg err "ID kosong"
+        wait_key
+        return
+    fi
+    
+    echo ""
+    msg info "Testing load for ID: $test_id"
+    echo ""
+    
+    # Test with awk
+    echo "Test 1: AWK match..."
+    local line
+    line=$(awk -F'|' -v id="$test_id" '$1 == id' "$CONFIG_FILE" 2>/dev/null | head -n1)
+    
+    if [ -n "$line" ]; then
+        msg ok "AWK found line!"
+        echo "Content: $line"
+        
+        # Parse
+        IFS='|' read -r t_id t_name t_path t_src t_fe t_be t_fe_port t_be_port _ <<< "$line"
+        
+        echo ""
+        echo "Parsed data:"
+        echo "  ID: '$t_id'"
+        echo "  Name: '$t_name'"
+        echo "  Path: '$t_path'"
+        echo "  Source: '$t_src'"
+        echo "  FE Dir: '$t_fe'"
+        echo "  BE Dir: '$t_be'"
+        echo "  FE Port: '$t_fe_port'"
+        echo "  BE Port: '$t_be_port'"
+    else
+        msg err "AWK tidak menemukan ID $test_id"
+    fi
+    
+    echo ""
+    msg info "Testing actual load_project function..."
+    
+    if load_project "$test_id"; then
+        msg ok "load_project SUCCESS!"
+        echo ""
+        echo "Loaded variables:"
+        echo "  PROJECT_ID: '$PROJECT_ID'"
+        echo "  PROJECT_NAME: '$PROJECT_NAME'"
+        echo "  PROJECT_PATH: '$PROJECT_PATH'"
+        echo "  FE_DIR: '$FE_DIR'"
+        echo "  BE_DIR: '$BE_DIR'"
+    else
+        msg err "load_project FAILED!"
+    fi
+    
+    wait_key
+}
+
+# ---------------------------
 # Main
 # ---------------------------
 main() {
+    # Debug mode check
+    if [ "${DEBUG_LAUNCHER:-0}" = "1" ]; then
+        set -x
+        msg info "Debug mode enabled"
+    fi
+    
     # Cleanup corrupted log files on startup
     if ls "$LOG_DIR"/_*.log >/dev/null 2>&1 || ls "$LOG_DIR"/_*.pid >/dev/null 2>&1; then
         msg warn "Membersihkan log files yang rusak..."
         rm -f "$LOG_DIR"/_*.log "$LOG_DIR"/_*.pid "$LOG_DIR"/_*.port 2>/dev/null || true
         msg ok "Cleanup selesai"
         sleep 1
+    fi
+    
+    # Check if accidentally called with args (wrong usage)
+    if [ $# -gt 0 ]; then
+        clear
+        msg err "Launcher dipanggil dengan argumen: $*"
+        echo ""
+        echo "Cara yang BENAR:"
+        echo "  ./dapps-launcher.sh"
+        echo "  (TANPA argumen apapun)"
+        echo ""
+        msg info "Launcher akan melanjutkan ke menu..."
+        sleep 2
     fi
     
     check_deps || msg warn "Install dependencies: pkg install nodejs git postgresql rsync"
@@ -1767,4 +1894,4 @@ main() {
     done
 }
 
-main
+main "$@"
