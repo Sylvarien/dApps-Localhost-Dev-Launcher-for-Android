@@ -123,12 +123,34 @@ save_project() {
 load_project() {
     local id="$1"
     local line
-    line=$(grep "^$id|" "$CONFIG_FILE" 2>/dev/null | head -n1 || true)
-    [ -z "$line" ] && return 1
+    
+    # CRITICAL: ID must not be empty
+    if [ -z "$id" ]; then
+        msg err "load_project: ID parameter kosong!"
+        return 1
+    fi
+    
+    # Escape special chars in grep
+    line=$(grep "^${id}|" "$CONFIG_FILE" 2>/dev/null | head -n1 || true)
+    
+    if [ -z "$line" ]; then
+        msg err "Project ID $id tidak ditemukan di config"
+        return 1
+    fi
     
     IFS='|' read -r PROJECT_ID PROJECT_NAME PROJECT_PATH SOURCE_PATH \
                     FE_DIR BE_DIR FE_PORT BE_PORT FE_CMD BE_CMD \
                     AUTO_RESTART AUTO_SYNC <<< "$line"
+    
+    # Validate loaded data
+    if [ -z "$PROJECT_ID" ]; then
+        msg err "Config corrupted: PROJECT_ID kosong untuk line: $line"
+        return 1
+    fi
+    
+    # Export untuk dipakai di fungsi lain
+    export PROJECT_ID PROJECT_NAME PROJECT_PATH SOURCE_PATH FE_DIR BE_DIR FE_PORT BE_PORT FE_CMD BE_CMD AUTO_RESTART AUTO_SYNC
+    
     return 0
 }
 
@@ -1375,6 +1397,35 @@ diagnose_and_fix() {
     status_postgres || msg warn "Install: pkg install postgresql"
     
     echo ""
+    msg info "Checking config file..."
+    if [ -f "$CONFIG_FILE" ] && [ -s "$CONFIG_FILE" ]; then
+        local count=$(wc -l < "$CONFIG_FILE")
+        msg ok "Config OK: $count projects"
+        echo ""
+        echo "First line sample:"
+        head -n1 "$CONFIG_FILE"
+        
+        # Check for malformed lines
+        local bad_lines=0
+        while IFS='|' read -r id name rest; do
+            if [ -z "$id" ] || [ -z "$name" ]; then
+                bad_lines=$((bad_lines + 1))
+            fi
+        done < "$CONFIG_FILE"
+        
+        if [ $bad_lines -gt 0 ]; then
+            msg warn "$bad_lines malformed lines in config!"
+            if confirm "Show malformed lines?"; then
+                awk -F'|' 'NF < 12 || $1 == "" || $2 == ""' "$CONFIG_FILE"
+            fi
+        else
+            msg ok "No malformed config lines"
+        fi
+    else
+        msg warn "Config file empty or missing"
+    fi
+    
+    echo ""
     msg info "Open ports:"
     if command -v ss &>/dev/null; then
         ss -tuln 2>/dev/null | head -n 20
@@ -1460,9 +1511,10 @@ show_menu() {
     echo " 9. 📤 Export Config"
     echo "10. 🔧 Diagnostics"
     echo "11. ✏️  Edit Project Config"
+    echo "12. 🛠️  Fix Config File (repair)"
     echo " 0. 🚪 Exit"
     echo -e "\n${BOLD}═══════════════════════════════════${X}"
-    read -rp "Select (0-11): " choice
+    read -rp "Select (0-12): " choice
     
     case "$choice" in
         1)
@@ -1549,6 +1601,7 @@ show_menu() {
         9) export_config_json; wait_key ;;
         10) diagnose_and_fix ;;
         11) edit_project_config ;;
+        12) fix_config_file ;;
         0)
             header
             msg info "Goodbye!"
@@ -1559,6 +1612,72 @@ show_menu() {
             wait_key
             ;;
     esac
+}
+
+# ---------------------------
+# Fix corrupted config
+# ---------------------------
+fix_config_file() {
+    header
+    echo -e "${BOLD}Fix Config File${X}\n"
+    
+    if [ ! -f "$CONFIG_FILE" ]; then
+        msg err "Config file tidak ada: $CONFIG_FILE"
+        wait_key
+        return
+    fi
+    
+    msg info "Checking config file..."
+    
+    local backup="$CONFIG_FILE.backup.$(date +%s)"
+    cp "$CONFIG_FILE" "$backup"
+    msg ok "Backup created: $backup"
+    
+    echo ""
+    echo "Current config:"
+    cat -n "$CONFIG_FILE"
+    
+    echo ""
+    local malformed=0
+    local line_num=0
+    
+    while IFS= read -r line; do
+        line_num=$((line_num + 1))
+        [ -z "$line" ] && continue
+        
+        local field_count=$(echo "$line" | awk -F'|' '{print NF}')
+        
+        if [ "$field_count" -ne 12 ]; then
+            msg warn "Line $line_num: Expected 12 fields, got $field_count"
+            echo "  Content: $line"
+            malformed=$((malformed + 1))
+        fi
+        
+        local id=$(echo "$line" | cut -d'|' -f1)
+        if [ -z "$id" ]; then
+            msg warn "Line $line_num: Empty ID"
+            malformed=$((malformed + 1))
+        fi
+    done < "$CONFIG_FILE"
+    
+    echo ""
+    if [ $malformed -eq 0 ]; then
+        msg ok "Config file OK! No issues found."
+    else
+        msg warn "Found $malformed malformed lines"
+        
+        if confirm "Remove malformed lines?"; then
+            awk -F'|' 'NF == 12 && $1 != ""' "$CONFIG_FILE" > "$CONFIG_FILE.tmp"
+            mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+            msg ok "Config cleaned!"
+            
+            echo ""
+            echo "New config:"
+            cat -n "$CONFIG_FILE"
+        fi
+    fi
+    
+    wait_key
 }
 
 # ---------------------------
