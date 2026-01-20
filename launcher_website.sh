@@ -1,22 +1,20 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================================
-# DApps Localhost Launcher - Improved v2.1.0 - FIXED
+# DApps Localhost Launcher - Professional v3.0.0
 # Platform: Android Termux
-# Tujuan: Launcher yang lebih berguna untuk developer (multi-start command,
-#        auto-detect package manager, update from git, sync, restart, tail logs)
-# Note: Designed to be installed once (see installer snippet below) as `dapps`.
+# Features: Auto-sync, ID-based management, Smart operations
 # ============================================================================
 
 set -euo pipefail
 
 # ---------------------------
-# Configuration (ubah sesuai kebutuhan)
+# Configuration
 # ---------------------------
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
-PROJECTS_DIR="${HOME:-$HOME}/dapps-projects"
-CONFIG_FILE="${HOME:-$HOME}/.dapps.conf"
-LOG_DIR="${HOME:-$HOME}/.dapps-logs"
-LAUNCHER_VERSION="2.1.0-FIXED"
+PROJECTS_DIR="$HOME/dapps-projects"
+CONFIG_FILE="$HOME/.dapps.conf"
+LOG_DIR="$HOME/.dapps-logs"
+LAUNCHER_VERSION="3.0.0"
 
 # Colors
 R="\033[31m"; G="\033[32m"; Y="\033[33m"; B="\033[34m"; C="\033[36m"; X="\033[0m"; BOLD="\033[1m"
@@ -41,7 +39,7 @@ msg() {
 header() {
     clear
     echo -e "${C}${BOLD}╔════════════════════════════════════════════════════════╗${X}"
-    echo -e "${C}${BOLD}║     DApps Localhost Launcher — v${LAUNCHER_VERSION}     ║${X}"
+    echo -e "${C}${BOLD}║    DApps Localhost Launcher Pro — v${LAUNCHER_VERSION}         ║${X}"
     echo -e "${C}${BOLD}╚════════════════════════════════════════════════════════╝${X}\n"
 }
 
@@ -51,59 +49,121 @@ wait_key() {
 }
 
 confirm() {
-    # confirm "Pesan"
     read -rp "$1 (y/N): " ans
     [[ "$ans" =~ ^[Yy]$ ]]
 }
 
 # ---------------------------
-# Config format (per baris):
-# name|path|fe_dir|be_dir|fe_port|be_port|fe_cmd|be_cmd|auto_restart
-# - fe_cmd / be_cmd : custom start command (jika kosong pakai default)
-# - auto_restart : 0/1
+# Config format (pipe-separated):
+# id|name|local_path|source_path|fe_dir|be_dir|fe_port|be_port|fe_cmd|be_cmd|auto_restart|auto_sync
 # ---------------------------
 
+generate_id() {
+    # Generate unique 6-char ID
+    echo "$(date +%s%N | md5sum | head -c 6)"
+}
+
 save_project() {
-    local name="$1" path="$2" fe_dir="$3" be_dir="$4" fe_port="$5" be_port="$6" fe_cmd="$7" be_cmd="$8" auto_restart="$9"
-    # remove old
-    grep -v "^$name|" "$CONFIG_FILE" 2>/dev/null > "$CONFIG_FILE.tmp" || true
+    local id="$1" name="$2" local_path="$3" source_path="$4"
+    local fe_dir="$5" be_dir="$6" fe_port="$7" be_port="$8"
+    local fe_cmd="$9" be_cmd="${10}" auto_restart="${11}" auto_sync="${12}"
+    
+    # Remove old entry by ID
+    grep -v "^$id|" "$CONFIG_FILE" 2>/dev/null > "$CONFIG_FILE.tmp" || true
     mv "$CONFIG_FILE.tmp" "$CONFIG_FILE" 2>/dev/null || true
-    echo "$name|$path|$fe_dir|$be_dir|$fe_port|$be_port|$fe_cmd|$be_cmd|$auto_restart" >> "$CONFIG_FILE"
+    
+    # Add new entry
+    echo "$id|$name|$local_path|$source_path|$fe_dir|$be_dir|$fe_port|$be_port|$fe_cmd|$be_cmd|$auto_restart|$auto_sync" >> "$CONFIG_FILE"
 }
 
 load_project() {
-    local name="$1"
+    local id="$1"
     local line
-    line=$(grep "^$name|" "$CONFIG_FILE" 2>/dev/null | head -n1 || true)
+    line=$(grep "^$id|" "$CONFIG_FILE" 2>/dev/null | head -n1 || true)
     [ -z "$line" ] && return 1
-    IFS='|' read -r PROJECT_NAME PROJECT_PATH FE_DIR BE_DIR FE_PORT BE_PORT FE_CMD BE_CMD AUTO_RESTART <<< "$line"
+    
+    IFS='|' read -r PROJECT_ID PROJECT_NAME PROJECT_PATH SOURCE_PATH \
+                    FE_DIR BE_DIR FE_PORT BE_PORT FE_CMD BE_CMD \
+                    AUTO_RESTART AUTO_SYNC <<< "$line"
     return 0
 }
 
-list_projects() {
-    [ ! -f "$CONFIG_FILE" ] && return 1
-    local num=1
-    while IFS='|' read -r name _; do
-        [ -z "$name" ] && continue
-        local status="❌"
-        [ -d "$(echo "$line" | cut -d'|' -f2)" ] # no-op to satisfy shellcheck
-        [ -d "$PROJECTS_DIR/$name" ] && status="✅"
-        echo "$num. $status $name"
-        num=$((num+1))
+list_projects_table() {
+    [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ] && return 1
+    
+    echo -e "${BOLD}ID     | Status | Name                  | Path${X}"
+    echo "---------------------------------------------------------------------"
+    
+    while IFS='|' read -r id name local_path source_path _; do
+        [ -z "$id" ] && continue
+        
+        local status="${G}✓${X}"
+        [ ! -d "$local_path" ] && status="${R}✗${X}"
+        
+        # Check if running
+        local running=""
+        local fe_pid_file="$LOG_DIR/${id}_frontend.pid"
+        local be_pid_file="$LOG_DIR/${id}_backend.pid"
+        
+        if [ -f "$fe_pid_file" ] || [ -f "$be_pid_file" ]; then
+            local fe_pid=$(cat "$fe_pid_file" 2>/dev/null || true)
+            local be_pid=$(cat "$be_pid_file" 2>/dev/null || true)
+            
+            if { [ -n "$fe_pid" ] && kill -0 "$fe_pid" 2>/dev/null; } || \
+               { [ -n "$be_pid" ] && kill -0 "$be_pid" 2>/dev/null; }; then
+                running=" ${G}[RUNNING]${X}"
+            fi
+        fi
+        
+        printf "%-6s | %-6s | %-21s | %s%s\n" "$id" "$status" "${name:0:21}" "${local_path:0:40}" "$running"
     done < "$CONFIG_FILE"
+    
+    return 0
 }
 
-# Better listing for menus (with status)
-list_projects_verbose() {
-    [ ! -f "$CONFIG_FILE" ] && return 1
-    local num=1
-    while IFS='|' read -r name path _; do
-        [ -z "$name" ] && continue
-        local status="❌"
-        [ -d "$path" ] && status="✅"
-        echo "$num) $status $name — $path"
-        num=$((num+1))
-    done < "$CONFIG_FILE"
+# ---------------------------
+# Auto-sync function
+# ---------------------------
+auto_sync_project() {
+    local id="$1"
+    load_project "$id" || return 1
+    
+    # Skip if no source path or source = local
+    [ -z "$SOURCE_PATH" ] || [ "$SOURCE_PATH" = "$PROJECT_PATH" ] && return 0
+    
+    # Check if source exists
+    [ ! -d "$SOURCE_PATH" ] && {
+        msg warn "Source path tidak ditemukan: $SOURCE_PATH"
+        return 1
+    }
+    
+    msg info "Auto-sync: $SOURCE_PATH → $PROJECT_PATH"
+    
+    # Create local directory if not exists
+    mkdir -p "$PROJECT_PATH"
+    
+    # Sync using rsync or cp
+    if command -v rsync &>/dev/null; then
+        rsync -a --delete "$SOURCE_PATH/" "$PROJECT_PATH/" || {
+            msg err "Sync gagal"
+            return 1
+        }
+    else
+        cp -rf "$SOURCE_PATH/"* "$PROJECT_PATH/" 2>/dev/null || {
+            msg err "Sync gagal"
+            return 1
+        }
+    fi
+    
+    msg ok "Sync selesai"
+    return 0
+}
+
+# ---------------------------
+# External storage check
+# ---------------------------
+is_external_storage() {
+    [[ "$1" =~ ^/storage/emulated/ ]] || [[ "$1" =~ ^/sdcard/ ]]
 }
 
 # ---------------------------
@@ -118,8 +178,8 @@ check_deps() {
         fi
     done
     if [ ${#missing[@]} -gt 0 ]; then
-        msg warn "Beberapa dependency tidak ada: ${missing[*]}"
-        msg info "Install yang diperlukan (node, git, net-tools/netstat) sebelum lanjut."
+        msg warn "Missing: ${missing[*]}"
+        msg info "Install: pkg install nodejs git net-tools"
         return 1
     fi
     return 0
@@ -142,79 +202,86 @@ get_available_port() {
 }
 
 # ---------------------------
+# Package manager detection
+# ---------------------------
+detect_pkg_manager() {
+    if command -v pnpm &>/dev/null; then echo "pnpm"
+    elif command -v yarn &>/dev/null; then echo "yarn"
+    else echo "npm"; fi
+}
+
+detect_start_command() {
+    local pdir="$1"
+    [ ! -f "$pdir/package.json" ] && { echo ""; return; }
+    
+    local has_dev=$(node -e "const p=require('$pdir/package.json'); console.log(!!(p.scripts && p.scripts.dev))" 2>/dev/null || echo "false")
+    [ "$has_dev" = "true" ] && { echo "npm run dev"; return; }
+    
+    local has_start=$(node -e "const p=require('$pdir/package.json'); console.log(!!(p.scripts && p.scripts.start))" 2>/dev/null || echo "false")
+    [ "$has_start" = "true" ] && { echo "npm start"; return; }
+    
+    echo ""
+}
+
+# ---------------------------
 # Service control
 # ---------------------------
 start_service() {
-    local proj="$1" dir="$2" port="$3" cmd="$4" label="$5"
-    local pid_file="$LOG_DIR/${proj}_${label}.pid"
-    local log_file="$LOG_DIR/${proj}_${label}.log"
-    local port_file="$LOG_DIR/${proj}_${label}.port"
+    local id="$1" dir="$2" port="$3" cmd="$4" label="$5"
+    local pid_file="$LOG_DIR/${id}_${label}.pid"
+    local log_file="$LOG_DIR/${id}_${label}.log"
+    local port_file="$LOG_DIR/${id}_${label}.port"
 
-    # if already running, report
+    # Check if already running
     if [ -f "$pid_file" ]; then
-        local pid
-        pid=$(cat "$pid_file" 2>/dev/null || true)
+        local pid=$(cat "$pid_file" 2>/dev/null || true)
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            msg warn "$label sudah running (PID: $pid)"
+            msg warn "$label already running (PID: $pid)"
             return 0
         fi
         rm -f "$pid_file" || true
     fi
 
     local full_path="$PROJECT_PATH/$dir"
-    [ ! -d "$full_path" ] && { msg err "$label folder tidak ada: $full_path"; return 1; }
+    [ ! -d "$full_path" ] && { msg err "$label folder not found: $full_path"; return 1; }
 
-    local final_port
-    final_port="$(get_available_port "$port")" || { msg err "Tidak ada port tersedia mulai $port"; return 1; }
-    [ "$final_port" != "$port" ] && msg warn "Port $port digunakan, pakai $final_port"
+    local final_port=$(get_available_port "$port") || { msg err "No port available"; return 1; }
+    [ "$final_port" != "$port" ] && msg warn "Port $port in use, using $final_port"
 
-    msg info "Starting $label di $full_path (port $final_port)..."
+    msg info "Starting $label on port $final_port..."
 
-    # export port to environment for npm scripts that use $PORT
     (cd "$full_path" || exit 1
-        # load .env if present
         [ -f ".env" ] && set -a && source .env 2>/dev/null && set +a
         PORT="$final_port"
-        # record started process with nohup, disown
         nohup bash -lc "PORT=$PORT $cmd" > "$log_file" 2>&1 &
         echo $! > "$pid_file"
         echo "$final_port" > "$port_file"
     )
 
     sleep 1
-    local pid
-    pid=$(cat "$pid_file" 2>/dev/null || true)
+    local pid=$(cat "$pid_file" 2>/dev/null || true)
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
         msg ok "$label started (PID: $pid, Port: $final_port)"
         return 0
     else
-        msg err "$label gagal start. Cek log: $log_file"
+        msg err "$label failed to start. Check: $log_file"
         rm -f "$pid_file" "$port_file" || true
         return 1
     fi
 }
 
 stop_service() {
-    local proj="$1" label="$2"
-    local pid_file="$LOG_DIR/${proj}_${label}.pid"
-    local port_file="$LOG_DIR/${proj}_${label}.port"
+    local id="$1" label="$2"
+    local pid_file="$LOG_DIR/${id}_${label}.pid"
+    local port_file="$LOG_DIR/${id}_${label}.port"
 
-    if [ ! -f "$pid_file" ]; then
-        msg info "$label tidak running"
-        return 0
-    fi
+    [ ! -f "$pid_file" ] && { msg info "$label not running"; return 0; }
 
-    local pid
-    pid=$(cat "$pid_file" 2>/dev/null || true)
-    if [ -z "$pid" ]; then
-        rm -f "$pid_file" "$port_file" || true
-        msg info "$label: PID file kosong, dihapus"
-        return 0
-    fi
+    local pid=$(cat "$pid_file" 2>/dev/null || true)
+    [ -z "$pid" ] && { rm -f "$pid_file" "$port_file"; return 0; }
 
     if ! kill -0 "$pid" 2>/dev/null; then
-        msg info "$label tidak berjalan (PID tidak valid), membersihkan file"
-        rm -f "$pid_file" "$port_file" || true
+        rm -f "$pid_file" "$port_file"
         return 0
     fi
 
@@ -226,641 +293,288 @@ stop_service() {
     msg ok "$label stopped"
 }
 
-# monitor and restart (background supervisor) - optional simple implementation
-supervise_service() {
-    local proj="$1" label="$2" dir="$3" port="$4" cmd="$5"
-    local pid_file="$LOG_DIR/${proj}_${label}.pid"
-    local log_file="$LOG_DIR/${proj}_${label}.log"
-    local port_file="$LOG_DIR/${proj}_${label}.port"
-    (
-        # run forever until pid file removed (stop_service removes pid file)
-        while true; do
-            # if pid exists and process alive -> sleep
-            if [ -f "$pid_file" ]; then
-                local pid
-                pid=$(cat "$pid_file" 2>/dev/null || true)
-                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                    sleep 2
-                    continue
-                fi
-            fi
-            # try start
-            start_service "$proj" "$dir" "$port" "$cmd" "$label" || {
-                sleep 2
-                continue
-            }
-            # now wait for process to exit
-            local pid
-            pid=$(cat "$pid_file" 2>/dev/null || true)
-            while [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; do
-                sleep 2
-                pid=$(cat "$pid_file" 2>/dev/null || true)
-            done
-            # if pid_file still exists, loop to restart
-            sleep 1
-        done
-    ) &
-    # supervise runs in background; its pid is not tracked separately (supervisor stops when pid file removed)
-}
-
 # ---------------------------
-# Utilities: detect package manager & default commands
-# ---------------------------
-detect_pkg_manager() {
-    # prefer pnpm -> yarn -> npm
-    if command -v pnpm &>/dev/null; then echo "pnpm"
-    elif command -v yarn &>/dev/null; then echo "yarn"
-    else echo "npm"; fi
-}
-
-detect_start_command() {
-    # arguments: project_dir type(frontend/backend)
-    local pdir="$1" type="$2"
-    if [ -f "$pdir/package.json" ]; then
-        local has_script
-        has_script=$(node -e "const p=require('$pdir/package.json'); console.log(!!(p.scripts && p.scripts.dev || p.scripts && p.scripts.start))" 2>/dev/null || true)
-        if [ "$has_script" = "true" ]; then
-            # prefer dev script
-            local has_dev
-            has_dev=$(node -e "const p=require('$pdir/package.json'); console.log(!!(p.scripts && p.scripts.dev))" 2>/dev/null || true)
-            if [ "$has_dev" = "true" ]; then
-                echo "npm run dev"
-                return
-            fi
-            echo "npm start"
-            return
-        fi
-    fi
-    # fallback: simple python http.server or static serve
-    if command -v serve &>/dev/null; then
-        echo "serve -s . -l \$PORT"
-    elif command -v python &>/dev/null; then
-        echo "python -m http.server \$PORT"
-    else
-        echo ""
-    fi
-}
-
-# ---------------------------
-# CRITICAL: Check if path is in Android external storage
-# ---------------------------
-is_external_storage() {
-    local path="$1"
-    [[ "$path" =~ ^/storage/emulated/ ]] || [[ "$path" =~ ^/sdcard/ ]]
-}
-
-# ---------------------------
-# Project flows
+# Project Operations
 # ---------------------------
 add_project() {
     header
-    echo -e "${BOLD}═══ Tambah Project Baru ═══${X}\n"
-    read -rp "Nama project: " name
-    [ -z "$name" ] && { msg err "Nama tidak boleh kosong"; wait_key; return; }
-    if grep -q "^$name|" "$CONFIG_FILE" 2>/dev/null; then
-        msg err "Project '$name' sudah ada!"
-        wait_key; return
-    fi
-
-    echo -e "\nPilih sumber:"
-    echo "1) Clone dari GitHub"
-    echo "2) Gunakan folder lokal yang sudah ada"
-    read -rp "Pilih (1/2): " source
-
-    local project_path=""
-    case "$source" in
+    echo -e "${BOLD}═══ Add New Project ═══${X}\n"
+    
+    read -rp "Project name: " name
+    [ -z "$name" ] && { msg err "Name required"; wait_key; return; }
+    
+    echo -e "\n${BOLD}Source:${X}"
+    echo "1) Clone from GitHub"
+    echo "2) Use existing folder (with auto-sync)"
+    echo "3) Create new empty project"
+    read -rp "Select (1-3): " source_type
+    
+    local id=$(generate_id)
+    local local_path="$PROJECTS_DIR/$name"
+    local source_path=""
+    local auto_sync=0
+    
+    case "$source_type" in
         1)
             read -rp "Git URL: " git_url
-            [ -z "$git_url" ] && { msg err "URL kosong"; wait_key; return; }
-            project_path="$PROJECTS_DIR/$name"
+            [ -z "$git_url" ] && { msg err "URL required"; wait_key; return; }
             msg info "Cloning..."
-            git clone "$git_url" "$project_path" || { msg err "Clone gagal"; wait_key; return; }
-            msg ok "Clone sukses: $project_path"
+            git clone "$git_url" "$local_path" || { msg err "Clone failed"; wait_key; return; }
+            msg ok "Cloned to: $local_path"
             ;;
         2)
-            read -rp "Path folder (contoh: $HOME/my-project): " project_path
-            [ -z "$project_path" ] && { msg err "Path kosong"; wait_key; return; }
+            read -rp "Source folder path: " source_path
+            [ -z "$source_path" ] && { msg err "Path required"; wait_key; return; }
+            [ ! -d "$source_path" ] && { msg err "Folder not found"; wait_key; return; }
             
-            # CRITICAL: Check if path is in Android external storage
-            if is_external_storage "$project_path"; then
-                msg err "❌ FATAL: Project di external storage Android terdeteksi!"
-                echo -e "\n${Y}${BOLD}MASALAH:${X}"
-                echo -e "${Y}• Android TIDAK MENGIZINKAN symlink di /storage/emulated/${X}"
-                echo -e "${Y}• npm membutuhkan symlink untuk node_modules/.bin/${X}"
-                echo -e "${Y}• Install akan GAGAL dengan error EACCES${X}\n"
+            # Auto-move if in external storage
+            if is_external_storage "$source_path"; then
+                msg warn "Source is in external storage (/storage/emulated/)"
+                msg info "Will auto-sync to Termux home for compatibility"
+                auto_sync=1
                 
-                echo -e "${BOLD}${G}SOLUSI OTOMATIS:${X}"
-                echo -e "Script akan memindahkan project ke Termux home\n"
+                msg info "Initial sync..."
+                mkdir -p "$local_path"
                 
-                if confirm "Pindahkan project ke $HOME/projects/ ?"; then
-                    local new_path="$HOME/projects/$(basename "$project_path")"
-                    mkdir -p "$HOME/projects"
-                    msg info "Memindahkan project..."
-                    
-                    # Move with progress
-                    if mv "$project_path" "$new_path" 2>/dev/null; then
-                        project_path="$new_path"
-                        msg ok "✅ Project berhasil dipindahkan ke: $project_path"
-                        sleep 1
-                    else
-                        msg err "Gagal memindahkan. Coba manual:"
-                        echo -e "${C}mv \"$project_path\" \"$new_path\"${X}"
-                        wait_key; return
-                    fi
+                if command -v rsync &>/dev/null; then
+                    rsync -a "$source_path/" "$local_path/" || { msg err "Sync failed"; wait_key; return; }
                 else
-                    msg warn "Dibatalkan. Project HARUS di Termux home untuk bisa jalan!"
-                    wait_key; return
+                    cp -rf "$source_path/"* "$local_path/" 2>/dev/null || { msg err "Sync failed"; wait_key; return; }
                 fi
+                msg ok "Synced to: $local_path"
+            else
+                # If source is in Termux home, use it directly
+                local_path="$source_path"
+                source_path=""
             fi
-            
-            [ ! -d "$project_path" ] && { msg err "Folder tidak ditemukan"; wait_key; return; }
+            ;;
+        3)
+            mkdir -p "$local_path/frontend" "$local_path/backend"
+            echo '{"name":"frontend","scripts":{"dev":"echo Frontend server"}}' > "$local_path/frontend/package.json"
+            echo '{"name":"backend","scripts":{"start":"echo Backend server"}}' > "$local_path/backend/package.json"
+            msg ok "Created: $local_path"
             ;;
         *)
-            msg err "Pilihan tidak valid"; wait_key; return
+            msg err "Invalid choice"; wait_key; return
             ;;
     esac
-
-    read -rp "Folder frontend [frontend]: " fe_dir; fe_dir=${fe_dir:-frontend}
-    read -rp "Folder backend [backend]: " be_dir; be_dir=${be_dir:-backend}
-    read -rp "Port frontend [3000]: " fe_port; fe_port=${fe_port:-3000}
-    read -rp "Port backend [8000]: " be_port; be_port=${be_port:-8000}
-
-    # detect default commands
-    local fe_full="$project_path/$fe_dir"
-    local be_full="$project_path/$be_dir"
-    local fe_cmd="" be_cmd=""
-    fe_cmd=$(detect_start_command "$fe_full" "frontend" || true)
-    be_cmd=$(detect_start_command "$be_full" "backend" || true)
-    [ -z "$fe_cmd" ] && fe_cmd="npm run dev"
-    [ -z "$be_cmd" ] && be_cmd="npm start"
-
-    read -rp "Custom frontend command [$fe_cmd]: " tmp; [ -n "$tmp" ] && fe_cmd="$tmp"
-    read -rp "Custom backend command  [$be_cmd]: " tmp; [ -n "$tmp" ] && be_cmd="$tmp"
-    read -rp "Auto-restart on crash? (y/N): " tmp; auto_restart=0
-    [[ "$tmp" =~ ^[Yy]$ ]] && auto_restart=1
-
-    save_project "$name" "$project_path" "$fe_dir" "$be_dir" "$fe_port" "$be_port" "$fe_cmd" "$be_cmd" "$auto_restart"
-    msg ok "Project '$name' disimpan."
-    if confirm "Install dependencies sekarang?"; then
-        install_deps "$name"
+    
+    read -rp "Frontend dir [frontend]: " fe_dir; fe_dir=${fe_dir:-frontend}
+    read -rp "Backend dir [backend]: " be_dir; be_dir=${be_dir:-backend}
+    read -rp "Frontend port [3000]: " fe_port; fe_port=${fe_port:-3000}
+    read -rp "Backend port [8000]: " be_port; be_port=${be_port:-8000}
+    
+    local fe_cmd=$(detect_start_command "$local_path/$fe_dir" || echo "npm run dev")
+    local be_cmd=$(detect_start_command "$local_path/$be_dir" || echo "npm start")
+    
+    read -rp "Frontend command [$fe_cmd]: " tmp; [ -n "$tmp" ] && fe_cmd="$tmp"
+    read -rp "Backend command [$be_cmd]: " tmp; [ -n "$tmp" ] && be_cmd="$tmp"
+    
+    save_project "$id" "$name" "$local_path" "$source_path" \
+                 "$fe_dir" "$be_dir" "$fe_port" "$be_port" \
+                 "$fe_cmd" "$be_cmd" "0" "$auto_sync"
+    
+    msg ok "Project added with ID: $id"
+    
+    if confirm "Install dependencies now?"; then
+        install_deps "$id"
     fi
+    
     wait_key
 }
 
 install_deps() {
-    local name="$1"
-    load_project "$name" || { msg err "Project tidak ditemukan"; return 1; }
+    local id="$1"
+    load_project "$id" || { msg err "Project not found"; return 1; }
     
-    # CRITICAL: Double-check if project is in external storage
-    if is_external_storage "$PROJECT_PATH"; then
-        msg err "❌ FATAL: Project masih di external storage!"
-        echo -e "\n${Y}${BOLD}PATH SAAT INI:${X} $PROJECT_PATH"
-        echo -e "${Y}npm TIDAK BISA install di /storage/emulated/${X}\n"
-        
-        echo -e "${BOLD}${G}PERBAIKI:${X}"
-        echo "1. Pindahkan project ke Termux home:"
-        echo -e "   ${C}mv \"$PROJECT_PATH\" \"$HOME/projects/$(basename "$PROJECT_PATH")\"${X}"
-        echo ""
-        echo "2. Edit config project (menu 4) dengan path baru"
-        echo ""
-        echo "3. Jalankan install ulang"
-        wait_key
-        return 1
-    fi
+    # Sync if needed
+    [ "$AUTO_SYNC" = "1" ] && auto_sync_project "$id"
     
-    msg info "Installing dependencies untuk $PROJECT_NAME..."
+    msg info "Installing dependencies for $PROJECT_NAME..."
     local pkg_mgr=$(detect_pkg_manager)
     
-    for spec in "Frontend:$FE_DIR:$FE_PORT:$FE_CMD" "Backend:$BE_DIR:$BE_PORT:$BE_CMD"; do
+    for spec in "Frontend:$FE_DIR" "Backend:$BE_DIR"; do
         local label=${spec%%:*}
-        local dir=${spec#*:}; dir=${dir%%:*}
+        local dir=${spec#*:}
         local full="$PROJECT_PATH/$dir"
         
-        if [ ! -d "$full" ]; then
-            msg warn "$label folder tidak ditemukan: $full"
-            continue
-        fi
+        [ ! -d "$full" ] && { msg warn "$label folder not found"; continue; }
+        [ ! -f "$full/package.json" ] && { msg warn "$label has no package.json"; continue; }
         
-        if [ ! -f "$full/package.json" ]; then
-            msg warn "$label tidak ada package.json, skip"
-            continue
-        fi
+        msg info "Installing $label with $pkg_mgr..."
         
-        msg info "Installing $label dengan $pkg_mgr..."
-        
-        # Try install with fallback
-        (cd "$full" && {
-            # Try normal install first
-            if $pkg_mgr install 2>/dev/null; then
-                msg ok "$label dependencies installed"
-            else
-                # Fallback dengan --no-bin-links
-                msg warn "Retry dengan --no-bin-links..."
-                if $pkg_mgr install --no-bin-links; then
-                    msg ok "$label dependencies installed (no-bin-links)"
-                else
-                    msg err "$label install failed"
-                fi
-            fi
-        }) || {
-            msg err "$label install failed completely"
-            continue
-        }
+        (cd "$full" && $pkg_mgr install) && msg ok "$label installed" || msg err "$label install failed"
     done
 }
 
 run_project() {
     header
-    echo -e "${BOLD}═══ Pilih Project untuk Dijalankan ═══${X}\n"
-    local projects
-    projects=$(list_projects_verbose)
-    if [ -z "$projects" ]; then msg warn "Belum ada project"; wait_key; return; fi
-    echo "$projects"
-    read -rp $'\n''Pilih nomor: ' num
-    local selected
-    selected=$(sed -n "${num}p" "$CONFIG_FILE" 2>/dev/null | cut -d'|' -f1)
-    [ -z "$selected" ] && { msg err "Pilihan tidak valid"; wait_key; return; }
-    load_project "$selected" || { msg err "Gagal load project"; wait_key; return; }
-
+    echo -e "${BOLD}═══ Start Project ═══${X}\n"
+    
+    list_projects_table || { msg warn "No projects"; wait_key; return; }
+    
+    echo ""
+    read -rp "Enter project ID: " id
+    [ -z "$id" ] && { msg err "ID required"; wait_key; return; }
+    
+    load_project "$id" || { msg err "Project not found"; wait_key; return; }
+    
     header
-    echo -e "${BOLD}═══ Running: $PROJECT_NAME ═══${X}\n"
-
-    # Validate paths
-    if [ ! -d "$PROJECT_PATH" ]; then
-        msg err "Project folder tidak ditemukan: $PROJECT_PATH"
-        wait_key; return
+    echo -e "${BOLD}═══ Starting: $PROJECT_NAME (ID: $id) ═══${X}\n"
+    
+    # Sync if enabled
+    [ "$AUTO_SYNC" = "1" ] && auto_sync_project "$id"
+    
+    [ ! -d "$PROJECT_PATH" ] && { msg err "Project path not found"; wait_key; return; }
+    
+    # Auto-install if needed
+    local fe_path="$PROJECT_PATH/$FE_DIR"
+    local be_path="$PROJECT_PATH/$BE_DIR"
+    
+    if [ -d "$fe_path" ] && [ -f "$fe_path/package.json" ] && [ ! -d "$fe_path/node_modules" ]; then
+        confirm "Frontend deps missing. Install?" && install_deps "$id"
     fi
     
-    # CRITICAL: Check external storage
-    if is_external_storage "$PROJECT_PATH"; then
-        msg err "❌ Project di external storage, tidak bisa dijalankan!"
-        echo -e "\n${Y}Pindahkan dulu ke Termux home (menu 4 - Edit Project)${X}\n"
-        wait_key; return
-    fi
-
-    # Ask to install deps if node_modules missing
-    local fe_path="$PROJECT_PATH/$FE_DIR" be_path="$PROJECT_PATH/$BE_DIR"
-    if [ -d "$fe_path" ] && [ -f "$fe_path/package.json" ] && [ ! -d "$fe_path/node_modules" ]; then
-        if confirm "Frontend dependencies belum terinstall. Install sekarang?"; then install_deps "$PROJECT_NAME"; fi
-    fi
     if [ -d "$be_path" ] && [ -f "$be_path/package.json" ] && [ ! -d "$be_path/node_modules" ]; then
-        if confirm "Backend dependencies belum terinstall. Install sekarang?"; then install_deps "$PROJECT_NAME"; fi
+        confirm "Backend deps missing. Install?" && install_deps "$id"
     fi
-
-    # start services (frontend then backend)
-    start_service "$PROJECT_NAME" "$FE_DIR" "$FE_PORT" "$FE_CMD" "frontend" || true
-    start_service "$PROJECT_NAME" "$BE_DIR" "$BE_PORT" "$BE_CMD" "backend" || true
-
-    # start supervisors if auto_restart enabled
-    if [ "${AUTO_RESTART:-0}" = "1" ]; then
-        supervise_service "$PROJECT_NAME" "frontend" "$FE_DIR" "$FE_PORT" "$FE_CMD"
-        supervise_service "$PROJECT_NAME" "backend" "$BE_DIR" "$BE_PORT" "$BE_CMD"
-        msg info "Auto-restart aktif untuk $PROJECT_NAME"
-    fi
-
+    
+    # Start services
+    start_service "$id" "$FE_DIR" "$FE_PORT" "$FE_CMD" "frontend"
+    start_service "$id" "$BE_DIR" "$BE_PORT" "$BE_CMD" "backend"
+    
     # Show URLs
-    echo -e "\n${BOLD}${G}═══ Akses URLs ═══${X}"
-    [ -f "$LOG_DIR/${PROJECT_NAME}_frontend.port" ] && {
-        local p; p=$(cat "$LOG_DIR/${PROJECT_NAME}_frontend.port")
+    echo -e "\n${BOLD}${G}═══ Access URLs ═══${X}"
+    [ -f "$LOG_DIR/${id}_frontend.port" ] && {
+        local p=$(cat "$LOG_DIR/${id}_frontend.port")
         echo -e "Frontend: ${C}http://127.0.0.1:$p${X}"
-    } || echo "Frontend: -"
-    [ -f "$LOG_DIR/${PROJECT_NAME}_backend.port" ] && {
-        local p; p=$(cat "$LOG_DIR/${PROJECT_NAME}_backend.port")
+    }
+    [ -f "$LOG_DIR/${id}_backend.port" ] && {
+        local p=$(cat "$LOG_DIR/${id}_backend.port")
         echo -e "Backend:  ${C}http://127.0.0.1:$p${X}"
-    } || echo "Backend: -"
-
+    }
+    
     wait_key
 }
 
 stop_project() {
     header
-    echo -e "${BOLD}═══ Stop Running Project ═══${X}\n"
-    local projects
-    projects=$(list_projects_verbose)
-    [ -z "$projects" ] && { msg warn "Belum ada project"; wait_key; return; }
-    echo "$projects"
-    read -rp $'\n''Pilih nomor: ' num
-    local selected
-    selected=$(sed -n "${num}p" "$CONFIG_FILE" 2>/dev/null | cut -d'|' -f1)
-    [ -z "$selected" ] && { msg err "Pilihan tidak valid"; wait_key; return; }
-    load_project "$selected" || { msg err "Gagal load project"; wait_key; return; }
-    stop_service "$PROJECT_NAME" "frontend"
-    stop_service "$PROJECT_NAME" "backend"
+    echo -e "${BOLD}═══ Stop Project ═══${X}\n"
+    
+    list_projects_table || { msg warn "No projects"; wait_key; return; }
+    
+    echo ""
+    read -rp "Enter project ID: " id
+    [ -z "$id" ] && { msg err "ID required"; wait_key; return; }
+    
+    load_project "$id" || { msg err "Project not found"; wait_key; return; }
+    
+    stop_service "$id" "frontend"
+    stop_service "$id" "backend"
+    
     wait_key
 }
 
-show_status() {
+delete_project() {
     header
-    echo -e "${BOLD}═══ Status Semua Project ═══${X}\n"
-    [ ! -f "$CONFIG_FILE" ] && { msg warn "Belum ada project"; wait_key; return; }
-    while IFS='|' read -r name path _; do
-        [ -z "$name" ] && continue
-        echo -e "${BOLD}$name${X}"
-        
-        # Check if in external storage
-        if is_external_storage "$path"; then
-            echo -e "  ${R}⚠️  WARNING: Di external storage (tidak bisa jalan!)${X}"
-        fi
-        
-        for svc in "frontend" "backend"; do
-            local pid_file="$LOG_DIR/${name}_${svc}.pid"
-            local port_file="$LOG_DIR/${name}_${svc}.port"
-            if [ -f "$pid_file" ]; then
-                local pid port
-                pid=$(cat "$pid_file" 2>/dev/null || true)
-                port=$(cat "$port_file" 2>/dev/null || true)
-                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                    echo -e "  ${G}● $svc${X} running (PID: $pid, Port: $port)"
-                else
-                    echo -e "  ${Y}○ $svc${X} stopped (stale pid cleaned)"
-                    rm -f "$pid_file" "$port_file" || true
-                fi
-            else
-                echo -e "  ${R}○ $svc${X} stopped"
-            fi
-        done
-        echo ""
-    done < "$CONFIG_FILE"
+    echo -e "${BOLD}═══ Delete Project ═══${X}\n"
+    
+    echo "1) Delete single project"
+    echo "2) Delete ALL projects"
+    read -rp "Select (1/2): " choice
+    
+    case "$choice" in
+        1)
+            list_projects_table || { msg warn "No projects"; wait_key; return; }
+            echo ""
+            read -rp "Enter project ID to delete: " id
+            [ -z "$id" ] && { msg err "ID required"; wait_key; return; }
+            
+            load_project "$id" || { msg err "Project not found"; wait_key; return; }
+            
+            echo -e "\n${R}${BOLD}WARNING:${X} This will delete:"
+            echo "  - Project: $PROJECT_NAME"
+            echo "  - Path: $PROJECT_PATH"
+            echo "  - Config entry"
+            echo ""
+            
+            confirm "Delete project files?" && {
+                stop_service "$id" "frontend"
+                stop_service "$id" "backend"
+                rm -rf "$PROJECT_PATH"
+                msg ok "Files deleted"
+            }
+            
+            confirm "Remove from config?" && {
+                grep -v "^$id|" "$CONFIG_FILE" > "$CONFIG_FILE.tmp"
+                mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+                msg ok "Config removed"
+            }
+            ;;
+        2)
+            echo -e "\n${R}${BOLD}DANGER:${X} This will delete ALL projects!"
+            confirm "Are you ABSOLUTELY sure?" || { msg info "Cancelled"; wait_key; return; }
+            confirm "Type YES to confirm" || { msg info "Cancelled"; wait_key; return; }
+            
+            # Stop all
+            while IFS='|' read -r id _; do
+                [ -z "$id" ] && continue
+                stop_service "$id" "frontend"
+                stop_service "$id" "backend"
+            done < "$CONFIG_FILE"
+            
+            rm -rf "$PROJECTS_DIR"/*
+            > "$CONFIG_FILE"
+            msg ok "All projects deleted"
+            ;;
+        *)
+            msg err "Invalid choice"
+            ;;
+    esac
+    
+    wait_key
+}
+
+sync_project() {
+    header
+    echo -e "${BOLD}═══ Sync Project ═══${X}\n"
+    
+    list_projects_table || { msg warn "No projects"; wait_key; return; }
+    
+    echo ""
+    read -rp "Enter project ID: " id
+    [ -z "$id" ] && { msg err "ID required"; wait_key; return; }
+    
+    load_project "$id" || { msg err "Project not found"; wait_key; return; }
+    
+    [ -z "$SOURCE_PATH" ] && { msg warn "No source path configured"; wait_key; return; }
+    
+    auto_sync_project "$id"
+    
     wait_key
 }
 
 view_logs() {
     header
     echo -e "${BOLD}═══ View Logs ═══${X}\n"
-    local projects
-    projects=$(list_projects_verbose)
-    [ -z "$projects" ] && { msg warn "Belum ada project"; wait_key; return; }
-    echo "$projects"
-    read -rp $'\n''Pilih project: ' num
-    local selected
-    selected=$(sed -n "${num}p" "$CONFIG_FILE" 2>/dev/null | cut -d'|' -f1)
-    [ -z "$selected" ] && { msg err "Pilihan tidak valid"; wait_key; return; }
-    header
-    echo -e "${BOLD}═══ Logs: $selected ═══${X}\n"
+    
+    list_projects_table || { msg warn "No projects"; wait_key; return; }
+    
+    echo ""
+    read -rp "Enter project ID: " id
+    [ -z "$id" ] && { msg err "ID required"; wait_key; return; }
+    
     echo "1) Frontend log"
     echo "2) Backend log"
-    echo "3) Tail all (follow)"
-    read -rp "Pilih: " choice
+    echo "3) Both (tail -f)"
+    read -rp "Select: " choice
+    
     case "$choice" in
-        1) log="$LOG_DIR/${selected}_frontend.log" ;;
-        2) log="$LOG_DIR/${selected}_backend.log" ;;
-        3)
-            echo -e "${BOLD}Follow mode (CTRL+C to stop)${X}\n"
-            tail -n 100 -f "$LOG_DIR/${selected}_frontend.log" "$LOG_DIR/${selected}_backend.log"
-            wait_key; return
-            ;;
-        *) msg err "Pilihan tidak valid"; wait_key; return ;;
+        1) tail -n 100 "$LOG_DIR/${id}_frontend.log" 2>/dev/null || msg warn "No log" ;;
+        2) tail -n 100 "$LOG_DIR/${id}_backend.log" 2>/dev/null || msg warn "No log" ;;
+        3) tail -f "$LOG_DIR/${id}_frontend.log" "$LOG_DIR/${id}_backend.log" 2>/dev/null ;;
+        *) msg err "Invalid" ;;
     esac
-    if [ -f "$log" ]; then
-        echo -e "\n${BOLD}═══ Last 200 lines ═══${X}\n"
-        tail -n 200 "$log" || true
-    else
-        msg warn "Log file tidak ditemukan: $log"
-    fi
-    wait_key
-}
-
-edit_project() {
-    header
-    echo -e "${BOLD}═══ Edit Project ═══${X}\n"
-    local projects
-    projects=$(list_projects_verbose)
-    [ -z "$projects" ] && { msg warn "Belum ada project"; wait_key; return; }
-    echo "$projects"
-    read -rp $'\n''Pilih nomor: ' num
-    local selected
-    selected=$(sed -n "${num}p" "$CONFIG_FILE" 2>/dev/null | cut -d'|' -f1)
-    [ -z "$selected" ] && { msg err "Pilihan tidak valid"; wait_key; return; }
-    load_project "$selected" || { msg err "Gagal load project"; wait_key; return; }
-    
-    # Show warning if in external storage
-    if is_external_storage "$PROJECT_PATH"; then
-        echo -e "${Y}${BOLD}⚠️  WARNING: Project di external storage!${X}\n"
-        echo -e "${Y}Pindahkan ke Termux home untuk bisa jalan${X}\n"
-    fi
-    
-    echo -e "Edit nilai kosong untuk tetap sama\n"
-    read -rp "Nama project [$PROJECT_NAME]: " name; name=${name:-$PROJECT_NAME}
-    read -rp "Path project [$PROJECT_PATH]: " path
-    
-    # Validate new path if provided
-    if [ -n "$path" ]; then
-        if is_external_storage "$path"; then
-            msg err "Path baru masih di external storage!"
-            if confirm "Auto-pindahkan ke $HOME/projects/?"; then
-                local new_path="$HOME/projects/$(basename "$path")"
-                mkdir -p "$HOME/projects"
-                if [ -d "$path" ] && mv "$path" "$new_path" 2>/dev/null; then
-                    path="$new_path"
-                    msg ok "Dipindahkan ke: $path"
-                else
-                    msg warn "Gagal pindahkan otomatis, gunakan path lama"
-                    path="$PROJECT_PATH"
-                fi
-            else
-                path="$PROJECT_PATH"
-            fi
-        fi
-    else
-        path="$PROJECT_PATH"
-    fi
-    
-    read -rp "Folder frontend [$FE_DIR]: " fe_dir; fe_dir=${fe_dir:-$FE_DIR}
-    read -rp "Folder backend  [$BE_DIR]: " be_dir; be_dir=${be_dir:-$BE_DIR}
-    read -rp "Port frontend [$FE_PORT]: " fe_port; fe_port=${fe_port:-$FE_PORT}
-    read -rp "Port backend  [$BE_PORT]: " be_port; be_port=${be_port:-$BE_PORT}
-    read -rp "Custom frontend command [$FE_CMD]: " fe_cmd; fe_cmd=${fe_cmd:-$FE_CMD}
-    read -rp "Custom backend command  [$BE_CMD]: " be_cmd; be_cmd=${be_cmd:-$BE_CMD}
-    read -rp "Auto-restart (y/N) [${AUTO_RESTART:-0}]: " tmp
-    auto_restart=0; [[ "$tmp" =~ ^[Yy]$ ]] && auto_restart=1
-    # save (delete old)
-    save_project "$name" "$path" "$fe_dir" "$be_dir" "$fe_port" "$be_port" "$fe_cmd" "$be_cmd" "$auto_restart"
-    msg ok "Project diperbarui."
-    wait_key
-}
-
-update_from_git() {
-    header
-    echo -e "${BOLD}═══ Update Project dari Git ═══${X}\n"
-    local projects
-    projects=$(list_projects_verbose)
-    [ -z "$projects" ] && { msg warn "Belum ada project"; wait_key; return; }
-    echo "$projects"
-    read -rp $'\n''Pilih nomor: ' num
-    local selected
-    selected=$(sed -n "${num}p" "$CONFIG_FILE" 2>/dev/null | cut -d'|' -f1)
-    [ -z "$selected" ] && { msg err "Pilihan tidak valid"; wait_key; return; }
-    load_project "$selected" || { msg err "Gagal load project"; wait_key; return; }
-    if [ ! -d "$PROJECT_PATH/.git" ]; then msg err "Folder bukan repo git"; wait_key; return; fi
-    (cd "$PROJECT_PATH" && git pull --rebase) && msg ok "Git pull selesai" || msg err "Git pull gagal"
-    wait_key
-}
-
-create_scaffold() {
-    header
-    echo -e "${BOLD}═══ Create Project Scaffold (simple) ═══${X}\n"
-    read -rp "Nama project baru: " name
-    [ -z "$name" ] && { msg err "Nama kosong"; wait_key; return; }
-    read -rp "Init git? (y/N): " initgit; initgit=${initgit:-N}
-    local dir="$PROJECTS_DIR/$name"
-    mkdir -p "$dir/frontend" "$dir/backend"
-    echo "{}" > "$dir/frontend/package.json"
-    echo "{}" > "$dir/backend/package.json"
-    if [[ "$initgit" =~ ^[Yy]$ ]]; then
-        (cd "$dir" && git init >/dev/null 2>&1)
-    fi
-    save_project "$name" "$dir" "frontend" "backend" "3000" "8000" "npm run dev" "npm start" "0"
-    msg ok "Scaffold $name dibuat di $dir"
-    wait_key
-}
-
-export_config() {
-    header
-    echo -e "${BOLD}═══ Export Config ═══${X}\n"
-    read -rp "Nama file export (contoh: dapps-export.json): " fname
-    [ -z "$fname" ] && { msg err "Nama file kosong"; wait_key; return; }
-    jq -R -s -c 'split("\n") | map(select(length>0)) | map(split("|") | {
-        name: .[0],
-        path: .[1],
-        fe_dir: .[2],
-        be_dir: .[3],
-        fe_port: .[4],
-        be_port: .[5],
-        fe_cmd: .[6],
-        be_cmd: .[7],
-        auto_restart: .[8]
-    })' "$CONFIG_FILE" > "$fname" 2>/dev/null || {
-        # fallback simple transform if jq not available
-        awk -F'|' 'NF>=1{printf("{\"name\":\"%s\",\"path\":\"%s\"}\n",$1,$2)}' "$CONFIG_FILE" > "$fname"
-    }
-    msg ok "Config diexport ke $fname"
-    wait_key
-}
-
-# ---------------------------
-# Self-update & uninstall helpers (if script installed into $PREFIX/bin/dapps)
-# ---------------------------
-self_update() {
-    header
-    echo -e "${BOLD}═══ Update Launcher dari GitHub ═══${X}\n"
-    local url="https://raw.githubusercontent.com/Sylvarien/dApps-Localhost-Dev-Launcher-for-Android/main/launcher_website.sh"
-    local tmp
-    tmp="$(mktemp -t dapps_update.XXXXXX)" || tmp="/tmp/dapps_update.$$"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$url" -o "$tmp" || { msg err "Download gagal"; rm -f "$tmp"; wait_key; return; }
-    else
-        wget -qO "$tmp" "$url" || { msg err "Download gagal (wget)"; rm -f "$tmp"; wait_key; return; }
-    fi
-    # normalize shebang
-    sed -i "1c #!/data/data/com.termux/files/usr/bin/bash" "$tmp"
-    chmod +x "$tmp"
-    mv -f "$tmp" "$PREFIX/bin/dapps"
-    chmod +x "$PREFIX/bin/dapps"
-    msg ok "Launcher diperbarui."
-    wait_key
-}
-
-self_uninstall() {
-    header
-    echo -e "${BOLD}═══ Uninstall DApps Launcher ═══${X}\n"
-    if confirm "Yakin uninstall launcher dan helper?"; then
-        rm -f "$PREFIX/bin/dapps" "$PREFIX/bin/dapps-update" "$PREFIX/bin/dapps-uninstall" || true
-        msg ok "Uninstalled."
-    else
-        msg info "Dibatalkan."
-    fi
-    wait_key
-}
-
-# ---------------------------
-# Diagnostic tool
-# ---------------------------
-diagnostic_check() {
-    header
-    echo -e "${BOLD}═══ Diagnostic & Fix Tool ═══${X}\n"
-    
-    msg info "Checking all projects..."
-    echo ""
-    
-    [ ! -f "$CONFIG_FILE" ] && { msg warn "Belum ada project"; wait_key; return; }
-    
-    local fixed=0
-    local issues=0
-    
-    while IFS='|' read -r name path fe_dir be_dir fe_port be_port fe_cmd be_cmd auto_restart; do
-        [ -z "$name" ] && continue
-        
-        echo -e "${BOLD}Checking: $name${X}"
-        
-        # Check 1: External storage
-        if is_external_storage "$path"; then
-            issues=$((issues+1))
-            echo -e "  ${R}✗ Di external storage (CRITICAL!)${X}"
-            echo -e "    Path: $path"
-            
-            if confirm "  Pindahkan ke $HOME/projects/?"; then
-                local new_path="$HOME/projects/$(basename "$path")"
-                mkdir -p "$HOME/projects"
-                
-                if [ -d "$path" ] && mv "$path" "$new_path" 2>/dev/null; then
-                    # Update config
-                    save_project "$name" "$new_path" "$fe_dir" "$be_dir" "$fe_port" "$be_port" "$fe_cmd" "$be_cmd" "$auto_restart"
-                    msg ok "  ✓ Dipindahkan ke: $new_path"
-                    fixed=$((fixed+1))
-                else
-                    msg err "  ✗ Gagal memindahkan"
-                fi
-            fi
-        else
-            echo -e "  ${G}✓ Path OK${X}"
-        fi
-        
-        # Check 2: Directory exists
-        if [ ! -d "$path" ]; then
-            issues=$((issues+1))
-            echo -e "  ${R}✗ Directory tidak ditemukan${X}"
-        else
-            echo -e "  ${G}✓ Directory exists${X}"
-        fi
-        
-        # Check 3: Frontend/Backend folders
-        if [ -d "$path/$fe_dir" ]; then
-            echo -e "  ${G}✓ Frontend folder OK${X}"
-        else
-            issues=$((issues+1))
-            echo -e "  ${Y}! Frontend folder tidak ada: $fe_dir${X}"
-        fi
-        
-        if [ -d "$path/$be_dir" ]; then
-            echo -e "  ${G}✓ Backend folder OK${X}"
-        else
-            issues=$((issues+1))
-            echo -e "  ${Y}! Backend folder tidak ada: $be_dir${X}"
-        fi
-        
-        # Check 4: node_modules
-        local fe_nm="$path/$fe_dir/node_modules"
-        local be_nm="$path/$be_dir/node_modules"
-        
-        if [ -d "$fe_nm" ]; then
-            echo -e "  ${G}✓ Frontend dependencies installed${X}"
-        else
-            echo -e "  ${Y}! Frontend dependencies belum install${X}"
-        fi
-        
-        if [ -d "$be_nm" ]; then
-            echo -e "  ${G}✓ Backend dependencies installed${X}"
-        else
-            echo -e "  ${Y}! Backend dependencies belum install${X}"
-        fi
-        
-        echo ""
-    done < "$CONFIG_FILE"
-    
-    echo -e "${BOLD}═══════════════════════════════${X}"
-    echo -e "Total Issues: ${R}$issues${X}"
-    echo -e "Fixed: ${G}$fixed${X}"
-    echo -e "${BOLD}═══════════════════════════════${X}"
     
     wait_key
 }
@@ -870,74 +584,49 @@ diagnostic_check() {
 # ---------------------------
 show_menu() {
     header
-    echo -e "${BOLD}MENU UTAMA${X}\n"
-    echo "1. ▶️  Jalankan Project"
-    echo "2. ⏹️  Stop Project"
-    echo "3. ➕ Tambah Project Baru"
-    echo "4. 🛠️  Edit Project"
-    echo "5. 📦 Install/Update Dependencies"
-    echo "6. 🔄 Update Project dari Git"
-    echo "7. 📊 Status Semua Project"
-    echo "8. 📝 Lihat Logs"
-    echo "9. ✨ Create Scaffold (baru)"
-    echo "10. 🔁 Export Config"
-    echo "11. 🔧 Diagnostic & Fix Tool"
-    echo "12. ⬆️  Update Launcher (self-update)"
-    echo "13. 🗑️  Uninstall Launcher"
-    echo "0. 🚪 Keluar"
-    echo -e "\n${BOLD}════════════════════════════════════${X}"
-    read -rp "Pilih menu (0-13): " choice
+    echo -e "${BOLD}MAIN MENU${X}\n"
+    echo " 1. 📋 List All Projects"
+    echo " 2. ➕ Add New Project"
+    echo " 3. ▶️  Start Project (by ID)"
+    echo " 4. ⏹️  Stop Project (by ID)"
+    echo " 5. 📦 Install Dependencies (by ID)"
+    echo " 6. 🔄 Sync Project (by ID)"
+    echo " 7. 📝 View Logs (by ID)"
+    echo " 8. 🗑️  Delete Project"
+    echo " 0. 🚪 Exit"
+    echo -e "\n${BOLD}═══════════════════════════════════${X}"
+    read -rp "Select (0-8): " choice
+    
     case "$choice" in
-        1) run_project ;;
-        2) stop_project ;;
-        3) add_project ;;
-        4) edit_project ;;
-        5)
+        1) header; list_projects_table || msg warn "No projects"; wait_key ;;
+        2) add_project ;;
+        3) run_project ;;
+        4) stop_project ;;
+        5) 
             header
-            local projects
-            projects=$(list_projects_verbose)
-            [ -z "$projects" ] && { msg warn "Belum ada project"; wait_key; return; }
-            echo "$projects"
-            read -rp $'\n''Pilih project: ' num
-            local selected
-            selected=$(sed -n "${num}p" "$CONFIG_FILE" 2>/dev/null | cut -d'|' -f1)
-            [ -n "$selected" ] && install_deps "$selected"
+            list_projects_table || { wait_key; return; }
+            echo ""
+            read -rp "Enter project ID: " id
+            [ -n "$id" ] && install_deps "$id"
             wait_key
             ;;
-        6) update_from_git ;;
-        7) show_status ;;
-        8) view_logs ;;
-        9) create_scaffold ;;
-        10) export_config ;;
-        11) diagnostic_check ;;
-        12) self_update ;;
-        13) self_uninstall ;;
-        0)
-            header
-            msg info "Terima kasih! Keluar..."
-            exit 0
-            ;;
-        *) msg err "Pilihan tidak valid"; wait_key ;;
+        6) sync_project ;;
+        7) view_logs ;;
+        8) delete_project ;;
+        0) header; msg info "Goodbye!"; exit 0 ;;
+        *) msg err "Invalid choice"; wait_key ;;
     esac
 }
 
 # ---------------------------
-# Entry point
+# Main
 # ---------------------------
 main() {
-    # Initial dependency check
-    if ! check_deps; then
-        msg warn "Some dependencies are missing — beberapa fitur mungkin terbatas."
-        echo ""
-    fi
+    check_deps || msg warn "Some dependencies missing"
     
-    # Main loop
     while true; do
         show_menu
     done
 }
 
-# Run main
 main
-
-# End of file
