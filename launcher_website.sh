@@ -1,29 +1,15 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================================
-# DApps Localhost Launcher - Professional v4.0.0 (SEMUA FITUR LENGKAP)
+# DApps Backend Server Launcher - Professional v4.0.2 (Fokus Backend Saja)
 # 
-# CHANGES v4.0:
-# ✅ ID diganti dengan nomor urut (lebih simpel)
-# ✅ SEMUA fitur v3.5.0 tetap ada!
-# ✅ Server bind ke 0.0.0.0 untuk akses eksternal
-# ✅ Logging sync detail (file list + bytes)
-# ✅ Multi-framework support (Vite/Next/CRA/Static/Express/Nest)
-# ✅ PostgreSQL integration
-# ✅ Database viewer
-#
-# PERBAIKAN DAN TAMBAHAN (v4.0.1 MVP Grade):
-# ✅ Perbaikan programmatic: Handle missing DB_NAME di .env dengan prompt user untuk set default DB_NAME jika tidak ada.
-# ✅ Otomatis jalankan npm audit fix --force jika ada vulnerabilities setelah install.
-# ✅ Tambah fitur self-update di menu (jalankan curl installer).
-# ✅ Tambah fitur tambahan: Monitor & Auto-Restart (sangat dibutuhkan untuk stability).
-# ✅ Tambah fitur tambahan: Backup Project (untuk keamanan data sebelum sync/update).
-# ✅ Pastikan kode clean, error handling lebih baik, MVP grade: Fokus pada core functionality dengan reliability.
-#
-# PERBAIKAN TAMBAHAN (v4.0.2):
-# ✅ Saat DB_NAME kosong, otomatis generate dan set DATABASE_URL full dengan default PostgreSQL (user: termux, no pass, host: localhost, port: 5432).
-# ✅ Tambah fitur create/edit .env: Jika .env belum ada saat start backend, prompt create dengan input variabel sebanyak yg user mau.
-# ✅ Jika .env ada, prompt edit: Tambah/update variabel dengan nama dan value.
-# ✅ Saat backend gagal start, tampilkan isi log secara langsung.
+# CHANGES:
+# ✅ Hapus semua fitur frontend, fokus hanya pada backend server.
+# ✅ Mirip railway.com: Host backend app dengan PostgreSQL, env management, logs, auto-restart, backup.
+# ✅ Config simplified: Hanya app_dir (sebelumnya be_dir), app_port, app_cmd.
+# ✅ Menu diubah fokus backend.
+# ✅ Auto-setup DATABASE_URL jika DB_NAME kosong.
+# ✅ Create/edit .env jika belum ada atau ingin edit.
+# ✅ Tampilkan log langsung jika gagal start.
 # ============================================================================
 
 set -euo pipefail
@@ -35,7 +21,7 @@ PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 PROJECTS_DIR="$HOME/dapps-projects"
 CONFIG_FILE="$HOME/.dapps.conf"
 LOG_DIR="$HOME/.dapps-logs"
-LAUNCHER_VERSION="4.0.2"  # Update version for fixes
+LAUNCHER_VERSION="4.0.2"
 
 DB_VIEWER_DIR="${DB_VIEWER_DIR:-$HOME/paxiforge-db-viewer}"
 DB_VIEWER_PORT="${DB_VIEWER_PORT:-8081}"
@@ -44,8 +30,8 @@ PG_DATA="${PG_DATA:-$PREFIX/var/lib/postgresql}"
 PG_LOG="$HOME/pgsql.log"
 
 # Default PostgreSQL config
-DEFAULT_DB_USER="termux"  # Adjust if needed, Termux PostgreSQL often uses current user
-DEFAULT_DB_PASS=""  # No password by default
+DEFAULT_DB_USER="termux"
+DEFAULT_DB_PASS=""
 DEFAULT_DB_HOST="localhost"
 DEFAULT_DB_PORT="5432"
 
@@ -61,17 +47,17 @@ touch "$CONFIG_FILE"
 # ---------------------------
 msg() {
     case "$1" in
-        ok)   echo -e "${G}✓${X} $2" ;;
-        err)  echo -e "${R}✗${X} $2" ;;
-        warn) echo -e "${Y}!${X} $2" ;;
-        info) echo -e "${B}i${X} $2" ;;
+        ok)   echo -e "\( {G}✓ \){X} $2" ;;
+        err)  echo -e "\( {R}✗ \){X} $2" ;;
+        warn) echo -e "\( {Y}! \){X} $2" ;;
+        info) echo -e "\( {B}i \){X} $2" ;;
         *)    echo -e "$1" ;;
     esac
 }
 
 confirm() {
     read -rp "$1 (y/N): " ans
-    [[ "$ans" =~ ^[Yy]$ ]]
+    [[ "\( ans" =~ ^[Yy] \) ]]
 }
 
 get_device_ip() {
@@ -96,7 +82,7 @@ get_device_ip() {
 }
 
 wait_key() {
-    echo -e "\n${C}Tekan ENTER untuk kembali...${X}"
+    echo -e "\n\( {C}Tekan ENTER untuk kembali... \){X}"
     read -r
 }
 
@@ -111,14 +97,13 @@ md5_file() {
 }
 
 # ---------------------------
-# Config format (NO ID):
-# name|local_path|source_path|fe_dir|be_dir|fe_port|be_port|fe_cmd|be_cmd|auto_restart|auto_sync
+# Config format (Simplified):
+# name|local_path|source_path|app_dir|app_port|app_cmd|auto_restart|auto_sync
 # ---------------------------
 
 save_project() {
     local num="$1" name="$2" local_path="$3" source_path="$4"
-    local fe_dir="$5" be_dir="$6" fe_port="$7" be_port="$8"
-    local fe_cmd="$9" be_cmd="${10}" auto_restart="${11}" auto_sync="${12}"
+    local app_dir="$5" app_port="$6" app_cmd="$7" auto_restart="$8" auto_sync="$9"
     
     local tmp_file="$CONFIG_FILE.tmp.$$"
     : > "$tmp_file"
@@ -126,21 +111,21 @@ save_project() {
     local current_line=1
     local updated=false
     
-    while IFS='|' read -r old_name old_path old_src old_fe old_be old_fe_port old_be_port old_fe_cmd old_be_cmd old_ar old_as || [ -n "$old_name" ]; do
+    while IFS='|' read -r old_name old_path old_src old_app old_app_port old_app_cmd old_ar old_as || [ -n "$old_name" ]; do
         if [ $current_line -eq $num ]; then
-            printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" \
-                "$name" "$local_path" "$source_path" "$fe_dir" "$be_dir" "$fe_port" "$be_port" "$fe_cmd" "$be_cmd" "$auto_restart" "$auto_sync" >> "$tmp_file"
+            printf "%s|%s|%s|%s|%s|%s|%s|%s\n" \
+                "$name" "$local_path" "$source_path" "$app_dir" "$app_port" "$app_cmd" "$auto_restart" "$auto_sync" >> "$tmp_file"
             updated=true
         else
-            printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" \
-                "$old_name" "$old_path" "$old_src" "$old_fe" "$old_be" "$old_fe_port" "$old_be_port" "$old_fe_cmd" "$old_be_cmd" "$old_ar" "$old_as" >> "$tmp_file"
+            printf "%s|%s|%s|%s|%s|%s|%s|%s\n" \
+                "$old_name" "$old_path" "$old_src" "$old_app" "$old_app_port" "$old_app_cmd" "$old_ar" "$old_as" >> "$tmp_file"
         fi
         current_line=$((current_line + 1))
     done < "$CONFIG_FILE"
     
     if [ "$updated" = false ]; then
-        printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" \
-            "$name" "$local_path" "$source_path" "$fe_dir" "$be_dir" "$fe_port" "$be_port" "$fe_cmd" "$be_cmd" "$auto_restart" "$auto_sync" >> "$tmp_file"
+        printf "%s|%s|%s|%s|%s|%s|%s|%s\n" \
+            "$name" "$local_path" "$source_path" "$app_dir" "$app_port" "$app_cmd" "$auto_restart" "$auto_sync" >> "$tmp_file"
     fi
     
     mv "$tmp_file" "$CONFIG_FILE"
@@ -154,13 +139,13 @@ load_project() {
         return 1
     fi
     
-    if ! [[ "$num" =~ ^[0-9]+$ ]]; then
+    if ! [[ "\( num" =~ ^[0-9]+ \) ]]; then
         msg err "Nomor harus angka!"
         return 1
     fi
     
     local line
-    line=$(sed -n "${num}p" "$CONFIG_FILE" 2>/dev/null || true)
+    line=\( (sed -n " \){num}p" "$CONFIG_FILE" 2>/dev/null || true)
     
     if [ -z "$line" ]; then
         msg err "Project #$num tidak ditemukan"
@@ -168,7 +153,7 @@ load_project() {
     fi
     
     IFS='|' read -r PROJECT_NAME PROJECT_PATH SOURCE_PATH \
-                    FE_DIR BE_DIR FE_PORT BE_PORT FE_CMD BE_CMD \
+                    APP_DIR APP_PORT APP_CMD \
                     AUTO_RESTART AUTO_SYNC <<< "$line"
     
     if [ -z "$PROJECT_NAME" ]; then
@@ -177,7 +162,7 @@ load_project() {
     fi
     
     export PROJECT_NUM="$num"
-    export PROJECT_NAME PROJECT_PATH SOURCE_PATH FE_DIR BE_DIR FE_PORT BE_PORT FE_CMD BE_CMD AUTO_RESTART AUTO_SYNC
+    export PROJECT_NAME PROJECT_PATH SOURCE_PATH APP_DIR APP_PORT APP_CMD AUTO_RESTART AUTO_SYNC
     
     return 0
 }
@@ -214,8 +199,8 @@ copy_storage_to_termux() {
     
     mkdir -p "$dest" "$dest/.dapps" 2>/dev/null || true
 
-    local tmp_log="$LOG_DIR/rsync_tmp_${proj_num}.out"
-    local final_log="$LOG_DIR/${proj_num}_sync.log"
+    local tmp_log="\( LOG_DIR/rsync_tmp_ \){proj_num}.out"
+    local final_log="\( LOG_DIR/ \){proj_num}_sync.log"
     : > "$tmp_log"
 
     msg info "Syncing: $(path_type "$src") → $dest"
@@ -239,7 +224,7 @@ copy_storage_to_termux() {
 {
   "files": $files,
   "bytes": $total_bytes,
-  "human_size": "$(numfmt --to=iec-i --suffix=B $total_bytes 2>/dev/null || echo "${total_bytes}B")",
+  "human_size": "$(numfmt --to=iec-i --suffix=B \( total_bytes 2>/dev/null || echo " \){total_bytes}B")",
   "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
 EOF
@@ -256,7 +241,7 @@ EOF
                 cat "$tmp_log"
             } > "$final_log"
             
-            msg ok "Synced: $files files, $(numfmt --to=iec-i --suffix=B $total_bytes 2>/dev/null || echo "${total_bytes}B")"
+            msg ok "Synced: $files files, $(numfmt --to=iec-i --suffix=B \( total_bytes 2>/dev/null || echo " \){total_bytes}B")"
         else
             msg err "rsync gagal. Lihat $tmp_log"
             return 1
@@ -276,7 +261,7 @@ EOF
 {
   "files": $cnt,
   "bytes": $bytes,
-  "human_size": "$(numfmt --to=iec-i --suffix=B $bytes 2>/dev/null || echo "${bytes}B")",
+  "human_size": "$(numfmt --to=iec-i --suffix=B \( bytes 2>/dev/null || echo " \){bytes}B")",
   "method": "tar-fallback",
   "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
@@ -300,7 +285,7 @@ sync_project_by_num() {
         [ -z "$sp" ] && { msg err "Cancelled"; return 1; }
         SOURCE_PATH="$sp"
         save_project "$num" "$PROJECT_NAME" "$PROJECT_PATH" "$SOURCE_PATH" \
-                     "$FE_DIR" "$BE_DIR" "$FE_PORT" "$BE_PORT" "$FE_CMD" "$BE_CMD" \
+                     "$APP_DIR" "$APP_PORT" "$APP_CMD" \
                      "$AUTO_RESTART" "$AUTO_SYNC"
     fi
     
@@ -315,7 +300,7 @@ sync_project_by_num() {
 
 sync_project() {
     header
-    echo -e "${BOLD}Sync Project${X}\n"
+    echo -e "\( {BOLD}Sync Project \){X}\n"
     echo "1) Sync by project number"
     echo "2) Sync ALL projects yang punya source_path"
     echo "0) Kembali"
@@ -369,40 +354,36 @@ list_projects_table() {
         return 1
     fi
     
-    echo -e "${BOLD}┌─────────────────────────────────────────────────────────────────────────────┐${X}"
-    echo -e "${BOLD}│                            PROJECT LIST                                     │${X}"
-    echo -e "${BOLD}└─────────────────────────────────────────────────────────────────────────────┘${X}"
+    echo -e "\( {BOLD}┌─────────────────────────────────────────────────────────────────────────────┐ \){X}"
+    echo -e "\( {BOLD}│                            PROJECT LIST                                     │ \){X}"
+    echo -e "\( {BOLD}└─────────────────────────────────────────────────────────────────────────────┘ \){X}"
     echo ""
-    echo -e "${BOLD}No. | Status | Name                  | Source      | FE Dir    | BE Dir${X}"
+    echo -e "\( {BOLD}No. | Status | Name                  | Source      | App Dir \){X}"
     echo "-------------------------------------------------------------------------------------"
     
     local line_num=0
-    while IFS='|' read -r name local_path source_path fe_dir be_dir _; do
+    while IFS='|' read -r name local_path source_path app_dir _; do
         line_num=$((line_num + 1))
         [ -z "$name" ] && continue
         
-        local status="${G}✓${X}"
-        [ ! -d "$local_path" ] && status="${R}✗${X}"
+        local status="\( {G}✓ \){X}"
+        [ ! -d "\( local_path" ] && status=" \){R}✗${X}"
         
         local running=""
-        local fe_pid_file="$LOG_DIR/${line_num}_frontend.pid"
-        local be_pid_file="$LOG_DIR/${line_num}_backend.pid"
+        local pid_file="\( LOG_DIR/ \){line_num}_server.pid"
         
-        if [ -f "$fe_pid_file" ] || [ -f "$be_pid_file" ]; then
-            local fe_pid=$(cat "$fe_pid_file" 2>/dev/null || true)
-            local be_pid=$(cat "$be_pid_file" 2>/dev/null || true)
-            if { [ -n "$fe_pid" ] && kill -0 "$fe_pid" 2>/dev/null; } || \
-               { [ -n "$be_pid" ] && kill -0 "$be_pid" 2>/dev/null; }; then
-                running=" ${G}[RUN]${X}"
+        if [ -f "$pid_file" ]; then
+            local pid=$(cat "$pid_file" 2>/dev/null || true)
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                running=" \( {G}[RUN] \){X}"
             fi
         fi
         
         local src_type; src_type=$(path_type "$source_path")
-        fe_dir="${fe_dir:-(none)}"
-        be_dir="${be_dir:-(none)}"
+        app_dir="${app_dir:-(none)}"
         
-        printf "%-3s | %-6s | %-21s | %-11s | %-9s | %-9s%s\n" \
-            "$line_num" "$status" "${name:0:21}" "$src_type" "${fe_dir:0:9}" "${be_dir:0:9}" "$running"
+        printf "%-3s | %-6s | %-21s | %-11s | %-9s%s\n" \
+            "$line_num" "\( status" " \){name:0:21}" "\( src_type" " \){app_dir:0:9}" "$running"
     done < "$CONFIG_FILE"
     
     echo ""
@@ -412,9 +393,9 @@ list_projects_table() {
         return 1
     fi
     
-    echo -e "${C}💡 Tips:${X}"
-    echo "  - Ketik angka di kolom ${BOLD}No.${X} untuk pilih project"
-    echo "  - Status ${G}[RUN]${X} = project sedang berjalan"
+    echo -e "\( {C}💡 Tips: \){X}"
+    echo "  - Ketik angka di kolom \( {BOLD}No. \){X} untuk pilih project"
+    echo "  - Status \( {G}[RUN] \){X} = project sedang berjalan"
     
     return 0
 }
@@ -424,19 +405,16 @@ prompt_open_path_after_list() {
     read -rp "Ketik (<nomor> info) atau tekan ENTER: " cmd
     [ -z "$cmd" ] && return 0
     
-    if [[ "$cmd" =~ ^([0-9]+)[[:space:]]+info$ ]]; then
+    if [[ "\( cmd" =~ ^([0-9]+)[[:space:]]+info \) ]]; then
         local num="${BASH_REMATCH[1]}"
         load_project "$num" || { msg err "Project not found"; return 1; }
         
-        echo -e "\n${BOLD}=== Project Info: $PROJECT_NAME (#$num) ===${X}"
+        echo -e "\n${BOLD}=== Project Info: $PROJECT_NAME (#\( num) === \){X}"
         echo "Local Path  : $PROJECT_PATH"
         echo "Source Path : ${SOURCE_PATH:-(none)}"
-        echo "FE Dir      : ${FE_DIR:-(none)}"
-        echo "BE Dir      : ${BE_DIR:-(none)}"
-        echo "FE Port     : ${FE_PORT:-3000}"
-        echo "BE Port     : ${BE_PORT:-8000}"
-        echo "FE Command  : ${FE_CMD:-auto}"
-        echo "BE Command  : ${BE_CMD:-auto}"
+        echo "App Dir     : ${APP_DIR:-(none)}"
+        echo "App Port    : ${APP_PORT:-8000}"
+        echo "App Command : ${APP_CMD:-auto}"
         echo "Auto Restart: ${AUTO_RESTART:-0}"
         echo "Auto Sync   : ${AUTO_SYNC:-0}"
         wait_key
@@ -455,7 +433,7 @@ init_postgres_if_needed() {
         return 1
     fi
     
-    if [ ! -d "$PG_DATA" ] || [ -z "$(ls -A "$PG_DATA" 2>/dev/null || true)" ]; then
+    if [ ! -d "\( PG_DATA" ] || [ -z " \)(ls -A "$PG_DATA" 2>/dev/null || true)" ]; then
         msg info "Inisialisasi PostgreSQL di: $PG_DATA"
         initdb "$PG_DATA" || { msg err "initdb gagal"; return 1; }
         msg ok "Postgres data siap"
@@ -512,32 +490,13 @@ stop_postgres() {
 }
 
 # ---------------------------
-# Framework detection
+# Framework detection for backend
 # ---------------------------
 detect_framework_and_cmd() {
     local pdir="$1"
     [ ! -f "$pdir/package.json" ] && { echo ""; return; }
     
     local pkg_json="$pdir/package.json"
-    
-    if grep -q '"vite"' "$pkg_json" 2>/dev/null; then
-        if grep -q '"dev":' "$pkg_json"; then
-            echo "npm run dev -- --host 0.0.0.0"
-            return
-        fi
-    fi
-    
-    if grep -q '"next"' "$pkg_json" 2>/dev/null; then
-        if grep -q '"dev":' "$pkg_json"; then
-            echo "npm run dev -- -H 0.0.0.0"
-            return
-        fi
-    fi
-    
-    if grep -q '"react-scripts"' "$pkg_json" 2>/dev/null; then
-        echo "HOST=0.0.0.0 npm start"
-        return
-    fi
     
     if grep -q '"express"' "$pkg_json" 2>/dev/null || grep -q '"koa"' "$pkg_json" 2>/dev/null; then
         if grep -q '"dev":' "$pkg_json"; then
@@ -569,39 +528,17 @@ detect_framework_and_cmd() {
         return
     fi
     
-    echo "npx serve . -l tcp://0.0.0.0:3000"
+    echo "npm start"
 }
 
 adjust_cmd_for_bind() {
     local cmd="$1"
     local port="$2"
     
-    if echo "$cmd" | grep -q "serve"; then
-        if ! echo "$cmd" | grep -q "0.0.0.0"; then
-            echo "$cmd -l tcp://0.0.0.0:$port"
-            return
-        fi
-    fi
-    
-    if echo "$cmd" | grep -q "vite"; then
-        if ! echo "$cmd" | grep -q -- "--host"; then
-            echo "$cmd --host 0.0.0.0 --port $port"
-            return
-        fi
-    fi
-    
-    if echo "$cmd" | grep -q "next"; then
-        if ! echo "$cmd" | grep -q -- "-H"; then
-            echo "$cmd -H 0.0.0.0 -p $port"
-            return
-        fi
-    fi
-    
-    if echo "$cmd" | grep -q "http-server"; then
-        if ! echo "$cmd" | grep -q "0.0.0.0"; then
-            echo "$cmd -a 0.0.0.0 -p $port"
-            return
-        fi
+    # Adjust for common frameworks
+    if echo "$cmd" | grep -q "npm start"; then
+        echo "PORT=$port $cmd"
+        return
     fi
     
     echo "$cmd"
@@ -634,28 +571,27 @@ get_available_port() {
 }
 
 # ---------------------------
-# Start/Stop services
+# Start/Stop services (Fokus backend/server)
 # ---------------------------
 start_service() {
     local num="$1"
     local dir="$2"
     local port="$3"
     local cmd="$4"
-    local label="$5"
     
     if [ -z "$num" ]; then
-        msg err "INTERNAL ERROR: Project number kosong di start_service!"
+        msg err "INTERNAL ERROR: Project number kosong!"
         return 1
     fi
     
-    local pid_file="$LOG_DIR/${num}_${label}.pid"
-    local log_file="$LOG_DIR/${num}_${label}.log"
-    local port_file="$LOG_DIR/${num}_${label}.port"
+    local pid_file="\( LOG_DIR/ \){num}_server.pid"
+    local log_file="\( LOG_DIR/ \){num}_server.log"
+    local port_file="\( LOG_DIR/ \){num}_server.port"
     
     if [ -f "$pid_file" ]; then
         local pid=$(cat "$pid_file" 2>/dev/null || true)
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            msg warn "$label already running (PID: $pid)"
+            msg warn "Server already running (PID: $pid)"
             return 0
         fi
         rm -f "$pid_file" || true
@@ -663,26 +599,24 @@ start_service() {
     
     local full_path="$PROJECT_PATH/$dir"
     [ ! -d "$full_path" ] && {
-        msg err "$label folder not found: $full_path"
+        msg err "App folder not found: $full_path"
         return 1
     }
     
-    if [ "$label" = "backend" ]; then
-        local envfile="$full_path/.env"
-        if [ ! -f "$envfile" ]; then
-            msg warn ".env tidak ditemukan. Membuat sekarang..."
-            create_env "$envfile"
-        else
-            if confirm ".env ada. Edit sekarang?"; then
-                edit_env "$envfile"
-            fi
+    local envfile="$full_path/.env"
+    if [ ! -f "$envfile" ]; then
+        msg warn ".env tidak ditemukan. Membuat sekarang..."
+        create_env "$envfile"
+    else
+        if confirm ".env ada. Edit sekarang?"; then
+            edit_env "$envfile"
         fi
-        
-        if command -v psql &>/dev/null; then
-            msg info "Setting up PostgreSQL for backend..."
-            start_postgres || msg warn "Postgres not available"
-            create_db_from_env "$num" "$full_path" || true
-        fi
+    fi
+    
+    if command -v psql &>/dev/null; then
+        msg info "Setting up PostgreSQL..."
+        start_postgres || msg warn "Postgres not available"
+        create_db_from_env "$num" "$full_path" || true
     fi
     
     local final_port
@@ -694,27 +628,27 @@ start_service() {
     [ "$final_port" != "$port" ] && msg warn "Port $port in use, using $final_port"
     
     if [ -f "$full_path/package.json" ]; then
-        local pkgsum_file="$LOG_DIR/${num}_${label}_pkgsum"
+        local pkgsum_file="\( LOG_DIR/ \){num}_server_pkgsum"
         local cur_sum; cur_sum=$(md5_file "$full_path/package.json" || true)
-        local prev_sum=""; [ -f "$pkgsum_file" ] && prev_sum=$(cat "$pkgsum_file" 2>/dev/null || true)
+        local prev_sum=""; [ -f "\( pkgsum_file" ] && prev_sum= \)(cat "$pkgsum_file" 2>/dev/null || true)
         
         if [ -n "$cur_sum" ] && [ "$cur_sum" != "$prev_sum" ]; then
-            msg info "package.json changed → installing for $label"
-            (cd "$full_path" && npm install --silent) && msg ok "$label deps installed" || msg warn "$label install failed"
+            msg info "package.json changed → installing"
+            (cd "$full_path" && npm install --silent) && msg ok "Deps installed" || msg warn "Install failed"
             echo "$cur_sum" > "$pkgsum_file"
         fi
     fi
     
     if [ -z "$cmd" ] || [ "$cmd" = "auto" ]; then
         cmd=$(detect_framework_and_cmd "$full_path")
-        [ -z "$cmd" ] && cmd="npx serve . -l tcp://0.0.0.0:$final_port"
+        [ -z "$cmd" ] && cmd="npm start"
         msg info "Auto-detected command: $cmd"
     fi
     
     local adj_cmd
     adj_cmd=$(adjust_cmd_for_bind "$cmd" "$final_port")
     
-    msg info "Starting $label with: $adj_cmd"
+    msg info "Starting server with: $adj_cmd"
     
     (
         cd "$full_path" || exit 1
@@ -735,18 +669,18 @@ start_service() {
     local pid; pid=$(cat "$pid_file" 2>/dev/null || true)
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
         local ip; ip=$(get_device_ip)
-        msg ok "$label started!"
-        echo -e "  ${G}→${X} PID: $pid"
-        echo -e "  ${G}→${X} Port: $final_port"
-        echo -e "  ${G}→${X} URL: http://$ip:$final_port"
-        echo -e "  ${G}→${X} Local: http://localhost:$final_port"
+        msg ok "Server started!"
+        echo -e "  \( {G}→ \){X} PID: $pid"
+        echo -e "  \( {G}→ \){X} Port: $final_port"
+        echo -e "  \( {G}→ \){X} URL: http://$ip:$final_port"
+        echo -e "  \( {G}→ \){X} Local: http://localhost:$final_port"
         return 0
     else
-        msg err "$label failed to start."
+        msg err "Server failed to start."
         if [ -f "$log_file" ]; then
-            echo -e "${R}--- Log Content ---${X}"
+            echo -e "\( {R}--- Log Content --- \){X}"
             cat "$log_file"
-            echo -e "${R}--- End Log ---${X}"
+            echo -e "\( {R}--- End Log --- \){X}"
         fi
         rm -f "$pid_file" "$port_file" || true
         return 1
@@ -755,13 +689,12 @@ start_service() {
 
 stop_service() {
     local num="$1"
-    local label="$2"
     
-    local pid_file="$LOG_DIR/${num}_${label}.pid"
-    local port_file="$LOG_DIR/${num}_${label}.port"
+    local pid_file="\( LOG_DIR/ \){num}_server.pid"
+    local port_file="\( LOG_DIR/ \){num}_server.port"
     
     [ ! -f "$pid_file" ] && {
-        msg info "$label not running"
+        msg info "Server not running"
         return 0
     }
     
@@ -776,13 +709,13 @@ stop_service() {
         return 0
     fi
     
-    msg info "Stopping $label (PID: $pid)..."
+    msg info "Stopping server (PID: $pid)..."
     kill "$pid" 2>/dev/null || true
     sleep 1
     
     kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
     rm -f "$pid_file" "$port_file" || true
-    msg ok "$label stopped"
+    msg ok "Server stopped"
 }
 
 # ---------------------------
@@ -794,35 +727,30 @@ install_deps() {
     
     msg info "Installing dependencies for $PROJECT_NAME..."
     
-    for spec in "Frontend:$FE_DIR" "Backend:$BE_DIR"; do
-        local label=${spec%%:*}
-        local dir=${spec#*:}
-        local full="$PROJECT_PATH/$dir"
+    local full="$PROJECT_PATH/$APP_DIR"
         
-        [ -z "$dir" ] || [ "$dir" = "(none)" ] && {
-            msg warn "$label dir not configured"
-            continue
-        }
+    [ -z "$APP_DIR" ] || [ "$APP_DIR" = "(none)" ] && {
+        msg warn "App dir not configured"
+        return 1
+    }
         
-        [ ! -d "$full" ] && {
-            msg warn "$label folder not found: $full"
-            continue
-        }
+    [ ! -d "$full" ] && {
+        msg warn "App folder not found: $full"
+        return 1
+    }
         
-        [ ! -f "$full/package.json" ] && {
-            msg warn "$label has no package.json"
-            continue
-        }
+    [ ! -f "$full/package.json" ] && {
+        msg warn "No package.json"
+        return 1
+    }
         
-        msg info "Installing $label..."
-        (cd "$full" && npm install) && msg ok "$label installed" || msg err "$label install failed"
+    msg info "Installing..."
+    (cd "$full" && npm install) && msg ok "Installed" || msg err "Install failed"
         
-        # Perbaikan programmatic: Jalankan npm audit fix --force jika ada vulnerabilities
-        if (cd "$full" && npm audit --json | grep -q '"severity"'); then
-            msg warn "Vulnerabilities detected in $label. Fixing..."
-            (cd "$full" && npm audit fix --force) && msg ok "Vulnerabilities fixed" || msg err "Fix failed"
-        fi
-    done
+    if (cd "$full" && npm audit --json | grep -q '"severity"'); then
+        msg warn "Vulnerabilities detected. Fixing..."
+        (cd "$full" && npm audit fix --force) && msg ok "Vulnerabilities fixed" || msg err "Fix failed"
+    fi
 }
 
 # ---------------------------
@@ -851,7 +779,6 @@ edit_env() {
         [ -z "$var_name" ] && break
         read -rp "Enter value for $var_name: " var_value
         
-        # Remove existing if any
         sed -i "/^$var_name=/d" "$envfile" 2>/dev/null || true
         echo "$var_name=$var_value" >> "$envfile"
     done
@@ -873,7 +800,7 @@ parse_db_config_from_env() {
     
     while IFS= read -r line; do
         line="${line%%#*}"
-        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        [[ "\( line" =~ ^[[:space:]]* \) ]] && continue
         
         if [[ "$line" =~ ^DB_HOST= ]]; then
             DB_HOST="${line#DB_HOST=}"
@@ -920,7 +847,7 @@ parse_db_config_from_env() {
         fi
     done < "$envfile"
     
-    echo "${DB_HOST}|${DB_PORT}|${DB_NAME}|${DB_USER}|${DB_PASSWORD}"
+    echo "\( {DB_HOST}| \){DB_PORT}|\( {DB_NAME}| \){DB_USER}|${DB_PASSWORD}"
     return 0
 }
 
@@ -956,13 +883,13 @@ create_db_if_needed() {
 
 create_db_from_env() {
     local num="$1"
-    local be_path="$2"
+    local app_path="$2"
     load_project "$num" || return 1
     
-    local envfile="$be_path/.env"
+    local envfile="$app_path/.env"
     
     [ ! -f "$envfile" ] && {
-        msg warn ".env backend tidak ditemukan"
+        msg warn ".env tidak ditemukan"
         return 1
     }
     
@@ -975,17 +902,14 @@ create_db_from_env() {
     
     if [ -z "$DB_NAME" ]; then
         msg warn "DB_NAME tidak ditemukan di .env"
-        # Prompt for DB_NAME
-        read -rp "Masukkan DB_NAME (contoh: paxi_db): " DB_NAME
+        read -rp "Masukkan DB_NAME (contoh: app_db): " DB_NAME
         if [ -z "$DB_NAME" ]; then
             msg err "DB_NAME diperlukan. Skip auto-create."
             return 1
         fi
         
-        # Generate full DATABASE_URL
         local database_url="postgresql://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME"
         
-        # Tambahkan ke .env
         echo "DB_NAME=$DB_NAME" >> "$envfile"
         echo "DATABASE_URL=$database_url" >> "$envfile"
         msg ok "DATABASE_URL ditambahkan ke .env: $database_url"
@@ -1023,68 +947,41 @@ run_project_by_num() {
     }
     
     header
-    echo -e "${BOLD}Starting: $PROJECT_NAME (#$num)${X}\n"
+    echo -e "${BOLD}Starting: $PROJECT_NAME (#\( num) \){X}\n"
     
-    if [ -z "$FE_DIR" ] || [ "$FE_DIR" = "(none)" ]; then
-        msg err "Frontend directory belum dikonfigurasi!"
-        msg info "Gunakan 'Edit Project Config' (menu 11) untuk set FE_DIR"
+    if [ -z "$APP_DIR" ] || [ "$APP_DIR" = "(none)" ]; then
+        msg err "App directory belum dikonfigurasi!"
+        msg info "Gunakan 'Edit Project Config' (menu 11) untuk set APP_DIR"
         wait_key
         return 1
     fi
     
-    if [ ! -d "$PROJECT_PATH/$FE_DIR" ]; then
-        msg err "Frontend folder tidak ditemukan: $PROJECT_PATH/$FE_DIR"
-        msg info "Gunakan 'Edit Project Config' (menu 11) untuk update FE_DIR"
+    if [ ! -d "$PROJECT_PATH/$APP_DIR" ]; then
+        msg err "App folder tidak ditemukan: $PROJECT_PATH/$APP_DIR"
+        msg info "Gunakan 'Edit Project Config' (menu 11) untuk update APP_DIR"
         wait_key
         return 1
-    fi
-    
-    local has_backend=false
-    if [ -n "$BE_DIR" ] && [ "$BE_DIR" != "(none)" ]; then
-        if [ -d "$PROJECT_PATH/$BE_DIR" ]; then
-            has_backend=true
-        else
-            msg warn "Backend folder tidak ditemukan: $PROJECT_PATH/$BE_DIR"
-            msg warn "Backend akan di-skip"
-        fi
     fi
     
     [ "$AUTO_SYNC" = "1" ] && auto_sync_project "$num" || true
     
-    local fe_path="$PROJECT_PATH/$FE_DIR"
-    if [ -f "$fe_path/package.json" ] && [ ! -d "$fe_path/node_modules" ]; then
-        if confirm "Frontend deps missing. Install now?"; then
+    local app_path="$PROJECT_PATH/$APP_DIR"
+    if [ -f "$app_path/package.json" ] && [ ! -d "$app_path/node_modules" ]; then
+        if confirm "Deps missing. Install now?"; then
             install_deps "$num"
         fi
     fi
     
-    if [ "$has_backend" = true ]; then
-        local be_path="$PROJECT_PATH/$BE_DIR"
-        if [ -f "$be_path/package.json" ] && [ ! -d "$be_path/node_modules" ]; then
-            if confirm "Backend deps missing. Install now?"; then
-                install_deps "$num"
-            fi
-        fi
-    fi
-    
     echo ""
-    msg info "Starting services..."
+    msg info "Starting server..."
     echo ""
     
-    start_service "$num" "$FE_DIR" "${FE_PORT:-3000}" "${FE_CMD:-auto}" "frontend" || {
-        msg err "Frontend gagal start"
+    start_service "$num" "\( APP_DIR" " \){APP_PORT:-8000}" "${APP_CMD:-auto}" || {
+        msg err "Server gagal start"
     }
-    
-    if [ "$has_backend" = true ]; then
-        echo ""
-        start_service "$num" "$BE_DIR" "${BE_PORT:-8000}" "${BE_CMD:-auto}" "backend" || {
-            msg err "Backend gagal start"
-        }
-    fi
     
     echo ""
     msg ok "Project started!"
-    # Tambah fitur monitor auto-restart jika enabled
     if [ "$AUTO_RESTART" = "1" ]; then
         monitor_project "$num" &
     fi
@@ -1100,8 +997,7 @@ stop_project_by_num() {
     }
     
     msg info "Stopping $PROJECT_NAME..."
-    stop_service "$num" "frontend"
-    stop_service "$num" "backend"
+    stop_service "$num"
     wait_key
 }
 
@@ -1110,7 +1006,7 @@ stop_project_by_num() {
 # ---------------------------
 add_project() {
     header
-    echo -e "${BOLD}Add New Project${X}\n"
+    echo -e "\( {BOLD}Add New Project \){X}\n"
     
     read -rp "Project name: " name
     [ -z "$name" ] && {
@@ -1153,46 +1049,35 @@ add_project() {
     fi
     
     echo ""
-    echo -e "${BOLD}Konfigurasi Folder (WAJIB!)${X}"
+    echo -e "\( {BOLD}Konfigurasi Folder (WAJIB!) \){X}"
     echo "Masukkan nama folder relatif terhadap project root"
     echo ""
     
-    read -rp "Frontend directory (contoh: frontend, client, web): " fe_dir
-    [ -z "$fe_dir" ] && {
-        msg warn "Frontend dir kosong, set ke 'frontend'"
-        fe_dir="frontend"
+    read -rp "App directory (contoh: backend, api): " app_dir
+    [ -z "$app_dir" ] && {
+        msg warn "App dir kosong, set ke 'backend'"
+        app_dir="backend"
     }
     
-    read -rp "Backend directory (kosongkan jika tidak ada): " be_dir
-    [ -z "$be_dir" ] && be_dir="(none)"
+    read -rp "App port (default: 8000): " app_port
+    app_port="${app_port:-8000}"
     
-    read -rp "Frontend port (default: 3000): " fe_port
-    fe_port="${fe_port:-3000}"
+    local app_cmd="auto"
     
-    read -rp "Backend port (default: 8000): " be_port
-    be_port="${be_port:-8000}"
-    
-    local fe_cmd="auto"
-    local be_cmd="auto"
-    
-    if confirm "Custom start commands? (No = auto-detect)"; then
-        read -rp "Frontend command: " fe_cmd
-        read -rp "Backend command: " be_cmd
-        [ -z "$fe_cmd" ] && fe_cmd="auto"
-        [ -z "$be_cmd" ] && be_cmd="auto"
+    if confirm "Custom start command? (No = auto-detect)"; then
+        read -rp "App command: " app_cmd
+        [ -z "$app_cmd" ] && app_cmd="auto"
     fi
     
     local new_num=$(get_project_count)
     new_num=$((new_num + 1))
     
     save_project "$new_num" "$name" "$local_path" "$source_path" \
-                 "$fe_dir" "$be_dir" "$fe_port" "$be_port" \
-                 "$fe_cmd" "$be_cmd" "0" "0"
+                 "$app_dir" "$app_port" "$app_cmd" "0" "0"
     
     msg ok "Project added as #$new_num"
     echo ""
-    echo "Frontend: $fe_dir"
-    echo "Backend: $be_dir"
+    echo "App: $app_dir"
     wait_key
 }
 
@@ -1222,45 +1107,36 @@ edit_project_config() {
     }
     
     echo ""
-    echo -e "${BOLD}Current Config:${X}"
+    echo -e "\( {BOLD}Current Config: \){X}"
     echo "  Name       : $PROJECT_NAME"
     echo "  Path       : $PROJECT_PATH"
     echo "  Source     : ${SOURCE_PATH:-(none)}"
-    echo "  FE dir     : ${FE_DIR:-(none)}"
-    echo "  BE dir     : ${BE_DIR:-(none)}"
-    echo "  FE port    : ${FE_PORT:-3000}"
-    echo "  BE port    : ${BE_PORT:-8000}"
-    echo "  FE command : ${FE_CMD:-auto}"
-    echo "  BE command : ${BE_CMD:-auto}"
+    echo "  App dir    : ${APP_DIR:-(none)}"
+    echo "  App port   : ${APP_PORT:-8000}"
+    echo "  App command: ${APP_CMD:-auto}"
     echo ""
-    echo -e "${Y}Kosongkan untuk tidak mengubah${X}"
+    echo -e "\( {Y}Kosongkan untuk tidak mengubah \){X}"
     echo ""
     
     read -rp "New source path: " new_source
-    read -rp "New frontend dir: " new_fe
-    read -rp "New backend dir: " new_be
-    read -rp "New frontend port: " new_fe_port
-    read -rp "New backend port: " new_be_port
-    read -rp "New frontend cmd: " new_fe_cmd
-    read -rp "New backend cmd: " new_be_cmd
+    read -rp "New app dir: " new_app
+    read -rp "New app port: " new_app_port
+    read -rp "New app cmd: " new_app_cmd
     read -rp "Auto restart (0/1): " new_ar
     read -rp "Auto sync (0/1): " new_as
     
     [ -n "$new_source" ] && SOURCE_PATH="$new_source"
-    [ -n "$new_fe" ] && FE_DIR="$new_fe"
-    [ -n "$new_be" ] && BE_DIR="$new_be"
-    [ -n "$new_fe_port" ] && FE_PORT="$new_fe_port"
-    [ -n "$new_be_port" ] && BE_PORT="$new_be_port"
-    [ -n "$new_fe_cmd" ] && FE_CMD="$new_fe_cmd"
-    [ -n "$new_be_cmd" ] && BE_CMD="$new_be_cmd"
+    [ -n "$new_app" ] && APP_DIR="$new_app"
+    [ -n "$new_app_port" ] && APP_PORT="$new_app_port"
+    [ -n "$new_app_cmd" ] && APP_CMD="$new_app_cmd"
     [ -n "$new_ar" ] && AUTO_RESTART="$new_ar"
     [ -n "$new_as" ] && AUTO_SYNC="$new_as"
     
     save_project "$num" "$PROJECT_NAME" "$PROJECT_PATH" "$SOURCE_PATH" \
-                 "${FE_DIR:-(none)}" "${BE_DIR:-(none)}" \
-                 "${FE_PORT:-3000}" "${BE_PORT:-8000}" \
-                 "${FE_CMD:-auto}" "${BE_CMD:-auto}" \
-                 "${AUTO_RESTART:-0}" "${AUTO_SYNC:-0}"
+                 "${APP_DIR:-(none)}" \
+                 "${APP_PORT:-8000}" \
+                 "${APP_CMD:-auto}" \
+                 "\( {AUTO_RESTART:-0}" " \){AUTO_SYNC:-0}"
     
     msg ok "Config updated!"
     wait_key
@@ -1301,7 +1177,7 @@ delete_project() {
     
     sed -i "${num}d" "$CONFIG_FILE"
     
-    rm -f "$LOG_DIR/${num}_"*.{pid,log,port,out} 2>/dev/null || true
+    rm -f "\( LOG_DIR/ \){num}_"*.{pid,log,port,out} 2>/dev/null || true
     
     msg ok "Project removed from launcher"
     wait_key
@@ -1327,7 +1203,7 @@ view_logs() {
         return
     fi
     
-    if ! [[ "$num" =~ ^[0-9]+$ ]]; then
+    if ! [[ "\( num" =~ ^[0-9]+ \) ]]; then
         msg err "Number harus angka!"
         wait_key
         return
@@ -1340,32 +1216,22 @@ view_logs() {
     }
     
     echo ""
-    echo -e "${BOLD}=== Logs for: $PROJECT_NAME (#$num) ===${X}"
+    echo -e "${BOLD}=== Logs for: $PROJECT_NAME (#\( num) === \){X}"
     echo ""
     
-    local fe_log="$LOG_DIR/${num}_frontend.log"
-    local be_log="$LOG_DIR/${num}_backend.log"
-    local sync_log="$LOG_DIR/${num}_sync.log"
+    local server_log="\( LOG_DIR/ \){num}_server.log"
+    local sync_log="\( LOG_DIR/ \){num}_sync.log"
     
-    echo -e "${C}--- Frontend Log ---${X}"
-    echo "File: $fe_log"
-    if [ -f "$fe_log" ]; then
-        tail -n 50 "$fe_log"
+    echo -e "\( {C}--- Server Log --- \){X}"
+    echo "File: $server_log"
+    if [ -f "$server_log" ]; then
+        tail -n 50 "$server_log"
     else
         echo "(no log yet)"
     fi
     
     echo ""
-    echo -e "${C}--- Backend Log ---${X}"
-    echo "File: $be_log"
-    if [ -f "$be_log" ]; then
-        tail -n 50 "$be_log"
-    else
-        echo "(no log yet)"
-    fi
-    
-    echo ""
-    echo -e "${C}--- Sync Log ---${X}"
+    echo -e "\( {C}--- Sync Log --- \){X}"
     echo "File: $sync_log"
     if [ -f "$sync_log" ]; then
         tail -n 30 "$sync_log"
@@ -1374,7 +1240,7 @@ view_logs() {
     fi
     
     echo ""
-    echo -e "${Y}Tip: cat $fe_log untuk lihat full log${X}"
+    echo -e "${Y}Tip: cat \( server_log untuk lihat full log \){X}"
     
     wait_key
 }
@@ -1383,13 +1249,13 @@ view_logs() {
 # Export config
 # ---------------------------
 export_config_json() {
-    local out="$LOG_DIR/dapps_config_$(date +%F_%H%M%S).json"
+    local out="\( LOG_DIR/dapps_config_ \)(date +%F_%H%M%S).json"
     
     echo "[" > "$out"
     local first=1
     local line_num=0
     
-    while IFS='|' read -r name local_path source_path fe_dir be_dir fe_port be_port fe_cmd be_cmd auto_restart auto_sync; do
+    while IFS='|' read -r name local_path source_path app_dir app_port app_cmd auto_restart auto_sync; do
         line_num=$((line_num + 1))
         [ -z "$name" ] && continue
         
@@ -1402,12 +1268,9 @@ export_config_json() {
   "name": "$name",
   "path": "$local_path",
   "source": "$source_path",
-  "frontend_dir": "$fe_dir",
-  "backend_dir": "$be_dir",
-  "frontend_port": $fe_port,
-  "backend_port": $be_port,
-  "frontend_cmd": "$fe_cmd",
-  "backend_cmd": "$be_cmd",
+  "app_dir": "$app_dir",
+  "app_port": $app_port,
+  "app_cmd": "$app_cmd",
   "auto_restart": "$auto_restart",
   "auto_sync": "$auto_sync"
 }
@@ -1451,7 +1314,7 @@ check_deps() {
 
 diagnose_and_fix() {
     header
-    echo -e "${BOLD}System Diagnostics${X}\n"
+    echo -e "\( {BOLD}System Diagnostics \){X}\n"
     
     check_deps
     
@@ -1507,7 +1370,7 @@ diagnose_and_fix() {
 # ---------------------------
 self_update() {
     header
-    echo -e "${BOLD}Self Update Launcher${X}\n"
+    echo -e "\( {BOLD}Self Update Launcher \){X}\n"
     if confirm "Update launcher sekarang?"; then
         curl -fsSL https://raw.githubusercontent.com/Sylvarien/dApps-Localhost-Dev-Launcher-for-Android/main/installer.sh | bash
         msg ok "Update selesai. Restart launcher."
@@ -1519,39 +1382,32 @@ self_update() {
 }
 
 # ---------------------------
-# Fitur Tambahan: Monitor & Auto-Restart (sangat dibutuhkan untuk stability)
+# Fitur Tambahan: Monitor & Auto-Restart
 # ---------------------------
 monitor_project() {
     local num="$1"
     load_project "$num" || return 1
     
     while true; do
-        local fe_pid_file="$LOG_DIR/${num}_frontend.pid"
-        local be_pid_file="$LOG_DIR/${num}_backend.pid"
+        local pid_file="\( LOG_DIR/ \){num}_server.pid"
         
-        local fe_pid=$(cat "$fe_pid_file" 2>/dev/null || true)
-        local be_pid=$(cat "$be_pid_file" 2>/dev/null || true)
+        local pid=$(cat "$pid_file" 2>/dev/null || true)
         
-        if [ -n "$fe_pid" ] && ! kill -0 "$fe_pid" 2>/dev/null; then
-            msg warn "Frontend crashed! Restarting..."
-            start_service "$num" "$FE_DIR" "${FE_PORT:-3000}" "${FE_CMD:-auto}" "frontend"
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            msg warn "Server crashed! Restarting..."
+            start_service "$num" "\( APP_DIR" " \){APP_PORT:-8000}" "${APP_CMD:-auto}"
         fi
         
-        if [ -n "$be_pid" ] && ! kill -0 "$be_pid" 2>/dev/null; then
-            msg warn "Backend crashed! Restarting..."
-            start_service "$num" "$BE_DIR" "${BE_PORT:-8000}" "${BE_CMD:-auto}" "backend"
-        fi
-        
-        sleep 30  # Check every 30 seconds
+        sleep 30
     done
 }
 
 # ---------------------------
-# Fitur Tambahan: Backup Project (untuk keamanan sebelum sync/update)
+# Fitur Tambahan: Backup Project
 # ---------------------------
 backup_project() {
     header
-    echo -e "${BOLD}Backup Project${X}\n"
+    echo -e "\( {BOLD}Backup Project \){X}\n"
     
     list_projects_table || { msg warn "No projects"; wait_key; return; }
     
@@ -1561,7 +1417,7 @@ backup_project() {
     
     load_project "$num" || { msg err "Project not found"; wait_key; return; }
     
-    local backup_dir="$HOME/dapps-backups/$PROJECT_NAME_$(date +%F_%H%M%S)"
+    local backup_dir="$HOME/dapps-backups/\( PROJECT_NAME_ \)(date +%F_%H%M%S)"
     mkdir -p "$backup_dir"
     
     msg info "Backing up $PROJECT_NAME to $backup_dir"
@@ -1583,24 +1439,21 @@ header() {
         line_num=$((line_num + 1))
         [ -z "$name" ] && continue
         
-        local fe_pid_file="$LOG_DIR/${line_num}_frontend.pid"
-        local be_pid_file="$LOG_DIR/${line_num}_backend.pid"
+        local pid_file="\( LOG_DIR/ \){line_num}_server.pid"
         
-        if [ -f "$fe_pid_file" ] || [ -f "$be_pid_file" ]; then
-            local fe_pid=$(cat "$fe_pid_file" 2>/dev/null || true)
-            local be_pid=$(cat "$be_pid_file" 2>/dev/null || true)
+        if [ -f "$pid_file" ]; then
+            local pid=$(cat "$pid_file" 2>/dev/null || true)
             
-            if { [ -n "$fe_pid" ] && kill -0 "$fe_pid" 2>/dev/null; } || \
-               { [ -n "$be_pid" ] && kill -0 "$be_pid" 2>/dev/null; }; then
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
                 running_count=$((running_count+1))
             fi
         fi
     done < "$CONFIG_FILE" 2>/dev/null
     
-    echo -e "${C}${BOLD}╔════════════════════════════════════════════════════════╗${X}"
-    echo -e "${C}${BOLD}║    DApps Localhost Launcher Pro — v${LAUNCHER_VERSION}         ║${X}"
-    echo -e "${C}${BOLD}╚════════════════════════════════════════════════════════╝${X}\n"
-    echo -e "${BOLD}Running:${X} ${G}${running_count}${X} projects"
+    echo -e "\( {C} \){BOLD}╔════════════════════════════════════════════════════════╗${X}"
+    echo -e "\( {C} \){BOLD}║    DApps Backend Server Launcher — v\( {LAUNCHER_VERSION}      ║ \){X}"
+    echo -e "\( {C} \){BOLD}╚════════════════════════════════════════════════════════╝${X}\n"
+    echo -e "\( {BOLD}Running: \){X} \( {G} \){running_count}${X} projects"
     echo ""
 }
 
@@ -1609,7 +1462,7 @@ header() {
 # ---------------------------
 show_menu() {
     header
-    echo -e "${BOLD}MAIN MENU${X}\n"
+    echo -e "\( {BOLD}MAIN MENU \){X}\n"
     echo " 1. 📋 List Projects"
     echo " 2. ➕ Add Project"
     echo " 3. ▶️  Start Project"
@@ -1621,10 +1474,10 @@ show_menu() {
     echo " 9. 📤 Export Config"
     echo "10. 🔧 Diagnostics"
     echo "11. ✏️  Edit Project Config"
-    echo "12. 🔄 Self Update"  # Tambah menu self-update
-    echo "13. 🛡️ Backup Project"  # Tambah fitur backup
+    echo "12. 🔄 Self Update"
+    echo "13. 🛡️ Backup Project"
     echo " 0. 🚪 Exit"
-    echo -e "\n${BOLD}═══════════════════════════════════${X}"
+    echo -e "\n\( {BOLD}═══════════════════════════════════ \){X}"
     read -rp "Select (0-13): " choice
     
     case "$choice" in
@@ -1637,9 +1490,9 @@ show_menu() {
         2) add_project ;;
         3)
             clear
-            echo -e "${C}${BOLD}╔════════════════════════════════════════════════════════╗${X}"
-            echo -e "${C}${BOLD}║              START PROJECT                             ║${X}"
-            echo -e "${C}${BOLD}╚════════════════════════════════════════════════════════╝${X}\n"
+            echo -e "\( {C} \){BOLD}╔════════════════════════════════════════════════════════╗${X}"
+            echo -e "\( {C} \){BOLD}║              START PROJECT                             ║${X}"
+            echo -e "\( {C} \){BOLD}╚════════════════════════════════════════════════════════╝${X}\n"
             
             if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
                 msg warn "Belum ada project!"
@@ -1663,9 +1516,9 @@ show_menu() {
             fi
             
             echo ""
-            echo -e "${BOLD}${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
-            echo -e "${BOLD}Pilih project yang ingin di-start${X}"
-            echo -e "${BOLD}${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
+            echo -e "\( {BOLD} \){Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
+            echo -e "\( {BOLD}Pilih project yang ingin di-start \){X}"
+            echo -e "\( {BOLD} \){Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
             echo ""
             read -rp "Masukkan nomor project (atau 0 untuk batal): " num
             
@@ -1677,7 +1530,7 @@ show_menu() {
                 continue
             fi
             
-            if ! [[ "$num" =~ ^[0-9]+$ ]]; then
+            if ! [[ "\( num" =~ ^[0-9]+ \) ]]; then
                 msg err "Nomor harus ANGKA!"
                 wait_key
                 continue
@@ -1703,7 +1556,7 @@ show_menu() {
             echo ""
             read -rp "Enter project number: " num
             
-            if [ -z "$num" ] || ! [[ "$num" =~ ^[0-9]+$ ]]; then
+            if [ -z "$num" ] || ! [[ "\( num" =~ ^[0-9]+ \) ]]; then
                 msg err "Nomor harus angka!"
                 wait_key
                 return
@@ -1729,7 +1582,7 @@ show_menu() {
             echo ""
             read -rp "Enter project number: " num
             
-            if [ -z "$num" ] || ! [[ "$num" =~ ^[0-9]+$ ]]; then
+            if [ -z "$num" ] || ! [[ "\( num" =~ ^[0-9]+ \) ]]; then
                 msg err "Nomor harus angka!"
                 wait_key
                 return
@@ -1744,8 +1597,8 @@ show_menu() {
         9) export_config_json; wait_key ;;
         10) diagnose_and_fix ;;
         11) edit_project_config ;;
-        12) self_update ;;  # Tambah self-update
-        13) backup_project ;;  # Tambah backup
+        12) self_update ;;
+        13) backup_project ;;
         0)
             header
             msg info "Goodbye!"
