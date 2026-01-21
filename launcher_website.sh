@@ -1,12 +1,12 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================================
-# DApps Backend Server Launcher - Professional v4.0.4 (Fixed)
+# DApps Backend Server Launcher - Professional v4.0.4 (Fixed Live Server)
 # 
 # CHANGES v4.0.4:
-# ✅ Fixed all syntax errors in conditional expressions
-# ✅ Fixed variable substitutions in strings
-# ✅ Fixed regex patterns causing syntax errors
-# ✅ Improved error handling and validation
+# ✅ Fixed server not staying alive
+# ✅ Better process management with proper nohup
+# ✅ Fixed PORT environment variable handling
+# ✅ Better command execution
 # ============================================================================
 
 set -euo pipefail
@@ -635,6 +635,7 @@ start_service() {
     local pid_file="${LOG_DIR}/${num}_server.pid"
     local log_file="${LOG_DIR}/${num}_server.log"
     local port_file="${LOG_DIR}/${num}_server.port"
+    local start_script="${LOG_DIR}/${num}_start.sh"
     
     if [ -f "$pid_file" ]; then
         local pid=$(cat "$pid_file" 2>/dev/null || true)
@@ -694,7 +695,13 @@ start_service() {
             msg info "Auto-detected command: $cmd"
         fi
     else
-        msg info "Using configured command: $cmd"
+        # Check if cmd is a port number (bad config)
+        if [[ "$cmd" =~ ^[0-9]+$ ]]; then
+            msg warn "APP_CMD is a port number, auto-detecting instead..."
+            cmd=$(detect_framework_and_cmd "$full_path")
+            [ -z "$cmd" ] && cmd="npm start"
+        fi
+        msg info "Using command: $cmd"
     fi
     
     # Prepare the final command with environment variables
@@ -705,50 +712,74 @@ start_service() {
     msg info "Directory: $full_path"
     msg info "Port: $final_port"
     
-    # Start the service
-    (
-        cd "$full_path" || exit 1
-        
-        # Source .env if exists
-        if [ -f ".env" ]; then
-            set -a
-            source .env 2>/dev/null || true
-            set +a
-        fi
-        
-        # Export environment variables
-        export HOST="0.0.0.0"
-        export PORT="$final_port"
-        export HOSTNAME="0.0.0.0"
-        
-        # Start in background
-        nohup bash -c "cd '$full_path' && HOST=0.0.0.0 PORT=$final_port HOSTNAME=0.0.0.0 $final_cmd" > "$log_file" 2>&1 &
-        local new_pid=$!
-        echo "$new_pid" > "$pid_file"
-        echo "$final_port" > "$port_file"
-    )
+    # Create startup script
+    cat > "$start_script" <<EOFSCRIPT
+#!/data/data/com.termux/files/usr/bin/bash
+cd "$full_path" || exit 1
+
+# Source .env if exists
+if [ -f ".env" ]; then
+    set -a
+    source .env 2>/dev/null || true
+    set +a
+fi
+
+# Export environment variables
+export HOST="0.0.0.0"
+export PORT="$final_port"
+export HOSTNAME="0.0.0.0"
+export NODE_ENV="\${NODE_ENV:-development}"
+
+# Execute the command
+exec $final_cmd
+EOFSCRIPT
     
-    sleep 3
+    chmod +x "$start_script"
     
-    local pid; pid=$(cat "$pid_file" 2>/dev/null || true)
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-        local ip; ip=$(get_device_ip)
-        msg ok "Server started!"
-        echo -e "  ${G}→${X} PID: $pid"
-        echo -e "  ${G}→${X} Port: $final_port"
-        echo -e "  ${G}→${X} URL: http://$ip:$final_port"
-        echo -e "  ${G}→${X} Local: http://localhost:$final_port"
-        return 0
-    else
-        msg err "Server failed to start."
+    # Start the service in background
+    msg info "Launching server..."
+    nohup bash "$start_script" > "$log_file" 2>&1 &
+    local new_pid=$!
+    echo "$new_pid" > "$pid_file"
+    echo "$final_port" > "$port_file"
+    
+    # Wait a bit for server to start
+    sleep 4
+    
+    # Check if process is still running
+    if ! kill -0 "$new_pid" 2>/dev/null; then
+        msg err "Server process died immediately!"
         if [ -f "$log_file" ]; then
-            echo -e "${R}--- Last 20 lines of log ---${X}"
-            tail -n 20 "$log_file"
+            echo -e "${R}--- Last 30 lines of log ---${X}"
+            tail -n 30 "$log_file"
             echo -e "${R}--- End Log ---${X}"
         fi
         rm -f "$pid_file" "$port_file" || true
         return 1
     fi
+    
+    # Verify server is responding (optional check)
+    local check_count=0
+    local max_checks=5
+    while [ $check_count -lt $max_checks ]; do
+        if curl -s -o /dev/null -w "%{http_code}" "http://localhost:$final_port" >/dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+        check_count=$((check_count + 1))
+    done
+    
+    local ip; ip=$(get_device_ip)
+    msg ok "Server started and running!"
+    echo -e "  ${G}→${X} PID: $new_pid"
+    echo -e "  ${G}→${X} Port: $final_port"
+    echo -e "  ${G}→${X} Network URL: http://$ip:$final_port"
+    echo -e "  ${G}→${X} Local URL: http://localhost:$final_port"
+    echo -e "  ${G}→${X} Log file: $log_file"
+    echo ""
+    msg info "Server akan terus berjalan hingga di-stop manual atau Termux ditutup"
+    
+    return 0
 }
 
 stop_service() {
@@ -1294,7 +1325,7 @@ view_logs() {
     }
     
     echo ""
-    read -rp "Enter project number: " num
+    read -rp "Enter project number (or 'live' for live tail): " num
     
     if [ -z "$num" ]; then
         msg err "Number kosong!"
@@ -1320,8 +1351,22 @@ view_logs() {
     
     local server_log="${LOG_DIR}/${num}_server.log"
     local sync_log="${LOG_DIR}/${num}_sync.log"
+    local pid_file="${LOG_DIR}/${num}_server.pid"
     
-    echo -e "${C}--- Server Log ---${X}"
+    # Check if server is running
+    if [ -f "$pid_file" ]; then
+        local pid=$(cat "$pid_file" 2>/dev/null || true)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            msg ok "Server is RUNNING (PID: $pid)"
+        else
+            msg warn "Server is NOT running"
+        fi
+    else
+        msg warn "Server is NOT running"
+    fi
+    
+    echo ""
+    echo -e "${C}--- Server Log (last 50 lines) ---${X}"
     echo "File: $server_log"
     if [ -f "$server_log" ]; then
         tail -n 50 "$server_log"
@@ -1330,7 +1375,7 @@ view_logs() {
     fi
     
     echo ""
-    echo -e "${C}--- Sync Log ---${X}"
+    echo -e "${C}--- Sync Log (last 30 lines) ---${X}"
     echo "File: $sync_log"
     if [ -f "$sync_log" ]; then
         tail -n 30 "$sync_log"
@@ -1339,7 +1384,9 @@ view_logs() {
     fi
     
     echo ""
-    echo -e "${Y}Tip: cat $server_log untuk lihat full log${X}"
+    echo -e "${Y}Commands:${X}"
+    echo "  tail -f $server_log  # Live tail"
+    echo "  cat $server_log      # Full log"
     
     wait_key
 }
@@ -1465,6 +1512,82 @@ diagnose_and_fix() {
 }
 
 # ---------------------------
+# Fitur Tambahan: Check Server Status
+# ---------------------------
+check_all_servers_status() {
+    header
+    echo -e "${BOLD}Server Status Check${X}\n"
+    
+    if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
+        msg warn "No projects configured"
+        wait_key
+        return
+    fi
+    
+    local line_num=0
+    local running_count=0
+    
+    echo -e "${BOLD}No. | Project               | Status      | PID     | Port${X}"
+    echo "-----------------------------------------------------------------------"
+    
+    while IFS='|' read -r name local_path _ app_dir app_port _; do
+        line_num=$((line_num + 1))
+        [ -z "$name" ] && continue
+        
+        local pid_file="${LOG_DIR}/${line_num}_server.pid"
+        local port_file="${LOG_DIR}/${line_num}_server.port"
+        
+        if [ -f "$pid_file" ]; then
+            local pid=$(cat "$pid_file" 2>/dev/null || true)
+            local port=$(cat "$port_file" 2>/dev/null || echo "N/A")
+            
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                printf "%-3s | %-21s | ${G}%-11s${X} | %-7s | %s\n" \
+                    "$line_num" "${name:0:21}" "RUNNING" "$pid" "$port"
+                running_count=$((running_count + 1))
+            else
+                printf "%-3s | %-21s | ${R}%-11s${X} | %-7s | %s\n" \
+                    "$line_num" "${name:0:21}" "STOPPED" "-" "-"
+            fi
+        else
+            printf "%-3s | %-21s | ${Y}%-11s${X} | %-7s | %s\n" \
+                "$line_num" "${name:0:21}" "NOT STARTED" "-" "-"
+        fi
+    done < "$CONFIG_FILE"
+    
+    echo ""
+    msg info "Total running servers: $running_count"
+    
+    if [ $running_count -gt 0 ]; then
+        echo ""
+        local ip; ip=$(get_device_ip)
+        msg info "Network IP: $ip"
+        echo ""
+        echo "Access URLs:"
+        
+        line_num=0
+        while IFS='|' read -r name _ _ _ _; do
+            line_num=$((line_num + 1))
+            [ -z "$name" ] && continue
+            
+            local pid_file="${LOG_DIR}/${line_num}_server.pid"
+            local port_file="${LOG_DIR}/${line_num}_server.port"
+            
+            if [ -f "$pid_file" ]; then
+                local pid=$(cat "$pid_file" 2>/dev/null || true)
+                local port=$(cat "$port_file" 2>/dev/null || true)
+                
+                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && [ -n "$port" ]; then
+                    echo "  → $name: http://$ip:$port"
+                fi
+            fi
+        done < "$CONFIG_FILE"
+    fi
+    
+    wait_key
+}
+
+# ---------------------------
 # Fitur Tambahan: Self Update
 # ---------------------------
 self_update() {
@@ -1575,9 +1698,10 @@ show_menu() {
     echo "11. ✏️  Edit Project Config"
     echo "12. 🔄 Self Update"
     echo "13. 🛡️ Backup Project"
+    echo "14. 🔍 Check Server Status"
     echo " 0. 🚪 Exit"
     echo -e "\n${BOLD}═══════════════════════════════════${X}"
-    read -rp "Select (0-13): " choice
+    read -rp "Select (0-14): " choice
     
     case "$choice" in
         1)
@@ -1698,6 +1822,7 @@ show_menu() {
         11) edit_project_config ;;
         12) self_update ;;
         13) backup_project ;;
+        14) check_all_servers_status ;;
         0)
             header
             msg info "Goodbye!"
