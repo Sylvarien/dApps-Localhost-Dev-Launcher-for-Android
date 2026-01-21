@@ -724,7 +724,9 @@ export PORT="PORT_PLACEHOLDER"
 export HOSTNAME="0.0.0.0"
 export NODE_ENV="${NODE_ENV:-development}"
 
-# Execute the command
+# Execute the command with stdin redirected to /dev/null
+# This prevents EBADF errors with nodemon and other interactive tools
+exec < /dev/null
 exec CMD_PLACEHOLDER
 EOFSCRIPT
     
@@ -735,9 +737,9 @@ EOFSCRIPT
     
     chmod +x "$start_script"
     
-    # Start the service in background
+    # Start the service in background with proper I/O redirection
     msg info "Launching server..."
-    nohup bash "$start_script" > "$log_file" 2>&1 &
+    nohup bash "$start_script" < /dev/null > "$log_file" 2>&1 &
     local new_pid=$!
     echo "$new_pid" > "$pid_file"
     echo "$final_port" > "$port_file"
