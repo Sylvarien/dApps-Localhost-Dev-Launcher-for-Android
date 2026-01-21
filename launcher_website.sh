@@ -753,18 +753,49 @@ EOFSCRIPT
         echo ""
         msg info "Checking log file for errors..."
         if [ -f "$log_file" ]; then
-            echo -e "${R}--- Last 30 lines of log ---${X}"
-            tail -n 30 "$log_file"
+            echo -e "${R}--- Last 50 lines of log ---${X}"
+            tail -n 50 "$log_file"
             echo -e "${R}--- End Log ---${X}"
         fi
         echo ""
         msg info "Possible issues:"
-        echo "  1. package.json missing or invalid"
-        echo "  2. Dependencies not installed (use menu 5)"
+        echo "  1. Missing dependencies - check package.json"
+        echo "  2. Module not found - run: cd '$full_path' && npm install"
         echo "  3. Wrong start command in package.json"
         echo "  4. Port already in use"
+        echo "  5. Database connection error"
+        echo ""
+        msg info "To fix:"
+        echo "  • Use menu 5 to install dependencies"
+        echo "  • Check log: tail -f $log_file"
+        echo "  • Manually test: cd '$full_path' && $cmd"
         rm -f "$pid_file" "$port_file" || true
         return 1
+    fi
+    
+    # Check log for errors even if process is running
+    if [ -f "$log_file" ]; then
+        local error_count=$(grep -i "error\|crash\|exception\|MODULE_NOT_FOUND" "$log_file" 2>/dev/null | wc -l || echo 0)
+        if [ "$error_count" -gt 0 ]; then
+            msg warn "Found $error_count errors in log. Server might not be working correctly."
+            echo ""
+            echo -e "${Y}--- Recent errors ---${X}"
+            grep -i "error\|crash\|exception\|MODULE_NOT_FOUND" "$log_file" 2>/dev/null | tail -n 10 || true
+            echo ""
+            msg warn "Server process is running but might not be responding to requests"
+            msg info "Check full log: tail -f $log_file"
+            echo ""
+        fi
+    fi
+    
+    # Try to verify server is actually listening on the port
+    sleep 2
+    if command -v ss &>/dev/null; then
+        if ! ss -tuln 2>/dev/null | grep -q ":$final_port "; then
+            msg warn "Server process running but not listening on port $final_port"
+            msg info "This usually means the app crashed or is still starting"
+            echo ""
+        fi
     fi
     
     # Verify server is responding (optional check)
@@ -839,30 +870,49 @@ install_deps() {
     
     msg info "Installing dependencies for $PROJECT_NAME..."
     
-    local full="$PROJECT_PATH/$APP_DIR"
-        
-    [ -z "$APP_DIR" ] || [ "$APP_DIR" = "(none)" ] && {
-        msg warn "App dir not configured"
-        return 1
-    }
-        
+    # Build full path
+    local full
+    if [ -z "$APP_DIR" ] || [ "$APP_DIR" = "." ] || [ "$APP_DIR" = "(none)" ]; then
+        full="$PROJECT_PATH"
+    else
+        full="$PROJECT_PATH/$APP_DIR"
+    fi
+    
     [ ! -d "$full" ] && {
         msg warn "App folder not found: $full"
         return 1
     }
-        
+    
     [ ! -f "$full/package.json" ] && {
-        msg warn "No package.json"
+        msg warn "No package.json found in $full"
         return 1
     }
-        
-    msg info "Installing..."
-    (cd "$full" && npm install) && msg ok "Installed" || msg err "Install failed"
-        
-    if (cd "$full" && npm audit --json | grep -q '"severity"'); then
-        msg warn "Vulnerabilities detected. Fixing..."
-        (cd "$full" && npm audit fix --force) && msg ok "Vulnerabilities fixed" || msg err "Fix failed"
+    
+    msg info "Installing in: $full"
+    
+    # Clean install for better reliability
+    if confirm "Do a clean install (remove node_modules first)?"; then
+        msg info "Removing old node_modules..."
+        rm -rf "$full/node_modules" "$full/package-lock.json"
     fi
+    
+    msg info "Running npm install..."
+    if (cd "$full" && npm install); then
+        msg ok "Dependencies installed successfully"
+        
+        # Check for vulnerabilities
+        if (cd "$full" && npm audit --json 2>/dev/null | grep -q '"severity"'); then
+            msg warn "Vulnerabilities detected"
+            if confirm "Run npm audit fix?"; then
+                (cd "$full" && npm audit fix) && msg ok "Vulnerabilities fixed" || msg warn "Some vulnerabilities remain"
+            fi
+        fi
+    else
+        msg err "npm install failed"
+        return 1
+    fi
+    
+    return 0
 }
 
 # ---------------------------
@@ -1595,6 +1645,136 @@ diagnose_and_fix() {
 }
 
 # ---------------------------
+# Fitur Tambahan: Test Server Connection
+# ---------------------------
+test_server_connection() {
+    header
+    echo -e "${BOLD}Test Server Connection${X}\n"
+    
+    if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
+        msg warn "No projects configured"
+        wait_key
+        return
+    fi
+    
+    list_projects_table || {
+        msg warn "No projects"
+        wait_key
+        return
+    }
+    
+    echo ""
+    read -rp "Enter project number to test: " num
+    
+    if [ -z "$num" ] || ! [[ "$num" =~ ^[0-9]+$ ]]; then
+        msg err "Invalid number"
+        wait_key
+        return
+    fi
+    
+    load_project "$num" || {
+        msg err "Project not found"
+        wait_key
+        return
+    }
+    
+    local pid_file="${LOG_DIR}/${num}_server.pid"
+    local port_file="${LOG_DIR}/${num}_server.port"
+    local log_file="${LOG_DIR}/${num}_server.log"
+    
+    echo ""
+    echo -e "${BOLD}Testing: $PROJECT_NAME${X}\n"
+    
+    # Check if process is running
+    msg info "1. Checking process status..."
+    if [ -f "$pid_file" ]; then
+        local pid=$(cat "$pid_file" 2>/dev/null || true)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            msg ok "Process is running (PID: $pid)"
+        else
+            msg err "Process is NOT running"
+            echo ""
+            msg info "Start the server first with menu 3"
+            wait_key
+            return
+        fi
+    else
+        msg err "No PID file found"
+        echo ""
+        msg info "Start the server first with menu 3"
+        wait_key
+        return
+    fi
+    
+    # Check port
+    msg info "2. Checking port binding..."
+    local port=$(cat "$port_file" 2>/dev/null || echo "3000")
+    
+    if command -v ss &>/dev/null; then
+        if ss -tuln 2>/dev/null | grep -q ":$port "; then
+            msg ok "Server is listening on port $port"
+        else
+            msg err "Server is NOT listening on port $port"
+            msg warn "Process running but not accepting connections"
+        fi
+    else
+        msg warn "Cannot verify port (ss command not available)"
+    fi
+    
+    # Test local connection
+    msg info "3. Testing local connection..."
+    if command -v curl &>/dev/null; then
+        local http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 "http://localhost:$port" 2>/dev/null || echo "000")
+        if [ "$http_code" != "000" ]; then
+            msg ok "Local connection successful (HTTP $http_code)"
+        else
+            msg err "Local connection FAILED"
+            msg warn "Server might be crashed or not responding"
+        fi
+    else
+        msg warn "Cannot test (curl not available)"
+    fi
+    
+    # Test network connection
+    msg info "4. Testing network connection..."
+    local ip; ip=$(get_device_ip)
+    if command -v curl &>/dev/null; then
+        local http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 "http://$ip:$port" 2>/dev/null || echo "000")
+        if [ "$http_code" != "000" ]; then
+            msg ok "Network connection successful (HTTP $http_code)"
+        else
+            msg err "Network connection FAILED"
+            msg warn "Firewall might be blocking or server only binding to localhost"
+        fi
+    fi
+    
+    # Check recent logs
+    msg info "5. Checking recent log errors..."
+    if [ -f "$log_file" ]; then
+        local error_lines=$(grep -i "error\|crash\|exception\|fail" "$log_file" 2>/dev/null | tail -n 5 || true)
+        if [ -n "$error_lines" ]; then
+            msg warn "Found recent errors in log:"
+            echo -e "${Y}$error_lines${X}"
+        else
+            msg ok "No recent errors in log"
+        fi
+    fi
+    
+    echo ""
+    echo -e "${BOLD}Summary:${X}"
+    echo "  Local URL: http://localhost:$port"
+    echo "  Network URL: http://$ip:$port"
+    echo ""
+    echo -e "${BOLD}Troubleshooting:${X}"
+    echo "  • View full log: tail -f $log_file"
+    echo "  • Restart server: Use menu 4 to stop, then menu 3 to start"
+    echo "  • Reinstall deps: Use menu 5"
+    echo "  • Check if PORT env variable is correctly set to $port"
+    
+    wait_key
+}
+
+# ---------------------------
 # Fitur Tambahan: Check Server Status
 # ---------------------------
 check_all_servers_status() {
@@ -1782,9 +1962,10 @@ show_menu() {
     echo "12. 🔄 Self Update"
     echo "13. 🛡️ Backup Project"
     echo "14. 🔍 Check Server Status"
+    echo "15. 🩺 Test Server Connection"
     echo " 0. 🚪 Exit"
     echo -e "\n${BOLD}═══════════════════════════════════${X}"
-    read -rp "Select (0-14): " choice
+    read -rp "Select (0-15): " choice
     
     case "$choice" in
         1)
@@ -1906,6 +2087,7 @@ show_menu() {
         12) self_update ;;
         13) backup_project ;;
         14) check_all_servers_status ;;
+        15) test_server_connection ;;
         0)
             header
             msg info "Goodbye!"
