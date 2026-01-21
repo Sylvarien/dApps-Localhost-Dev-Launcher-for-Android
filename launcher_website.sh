@@ -11,6 +11,7 @@
 # ✅ Create/edit .env jika belum ada atau ingin edit.
 # ✅ Tampilkan log langsung jika gagal start.
 # ✅ Fix: Ganti regex parsing DATABASE_URL dengan string manipulation untuk hindari syntax error di conditional expression.
+# ✅ Fix: Ubah regex di prompt_open_path_after_list untuk menghindari syntax error di conditional expression.
 # ============================================================================
 
 set -euo pipefail
@@ -406,19 +407,24 @@ prompt_open_path_after_list() {
     read -rp "Ketik (<nomor> info) atau tekan ENTER: " cmd
     [ -z "$cmd" ] && return 0
     
-    if [[ "\( cmd" =~ ^[0-9]+[[:space:]]+info \) ]]; then
-        local num="${BASH_REMATCH[0]%% *}"
-        load_project "$num" || { msg err "Project not found"; return 1; }
+    if [[ "$cmd" == *" info" ]]; then
+        local num=$(echo "$cmd" | awk '{print $1}')
+        if [[ "\( num" =~ ^[0-9]+ \) ]]; then
+            load_project "$num" || { msg err "Project not found"; return 1; }
         
-        echo -e "\n${BOLD}=== Project Info: $PROJECT_NAME (#\( num) === \){X}"
-        echo "Local Path  : $PROJECT_PATH"
-        echo "Source Path : ${SOURCE_PATH:-(none)}"
-        echo "App Dir     : ${APP_DIR:-(none)}"
-        echo "App Port    : ${APP_PORT:-8000}"
-        echo "App Command : ${APP_CMD:-auto}"
-        echo "Auto Restart: ${AUTO_RESTART:-0}"
-        echo "Auto Sync   : ${AUTO_SYNC:-0}"
-        wait_key
+            echo -e "\n${BOLD}=== Project Info: $PROJECT_NAME (#\( num) === \){X}"
+            echo "Local Path  : $PROJECT_PATH"
+            echo "Source Path : ${SOURCE_PATH:-(none)}"
+            echo "App Dir     : ${APP_DIR:-(none)}"
+            echo "App Port    : ${APP_PORT:-8000}"
+            echo "App Command : ${APP_CMD:-auto}"
+            echo "Auto Restart: ${AUTO_RESTART:-0}"
+            echo "Auto Sync   : ${AUTO_SYNC:-0}"
+            wait_key
+        else
+            msg err "Nomor tidak valid"
+            wait_key
+        fi
     else
         msg err "Format: <nomor> info"
         wait_key
@@ -841,7 +847,7 @@ parse_db_config_from_env() {
                 url="${url#*:}"
                 
                 DB_PASSWORD="${url%%@*}"
-                url="${url#@*}"
+                url="${url#*@}"
                 
                 host_port_db="$url"
                 DB_HOST="${host_port_db%%:*}"
