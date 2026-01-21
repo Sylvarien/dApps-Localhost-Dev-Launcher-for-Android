@@ -1,12 +1,12 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================================
-# DApps Backend Server Launcher - Professional v4.0.4 (Fixed Live Server)
+# DApps Backend Server Launcher - Professional v4.0.5 (PostgreSQL User Fix)
 # 
-# CHANGES v4.0.4:
-# ✅ Fixed server not staying alive
-# ✅ Better process management with proper nohup
-# ✅ Fixed PORT environment variable handling
-# ✅ Better command execution
+# CHANGES v4.0.5:
+# ✅ Fixed PostgreSQL "no user specified" error
+# ✅ Auto-detect PGUSER from DATABASE_URL or OS user
+# ✅ Export PGUSER to Node.js environment
+# ✅ No backend code changes needed
 # ============================================================================
 
 set -euo pipefail
@@ -18,7 +18,7 @@ PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 PROJECTS_DIR="$HOME/dapps-projects"
 CONFIG_FILE="$HOME/.dapps.conf"
 LOG_DIR="$HOME/.dapps-logs"
-LAUNCHER_VERSION="4.0.4"
+LAUNCHER_VERSION="4.0.5"
 
 DB_VIEWER_DIR="${DB_VIEWER_DIR:-$HOME/paxiforge-db-viewer}"
 DB_VIEWER_PORT="${DB_VIEWER_PORT:-8081}"
@@ -492,6 +492,102 @@ stop_postgres() {
 }
 
 # ---------------------------
+# PostgreSQL User Detection & Setup (NEW v4.0.5)
+# ---------------------------
+get_postgres_user() {
+    local app_path="$1"
+    local envfile="$app_path/.env"
+    
+    # Priority 1: Extract from DATABASE_URL
+    if [ -f "$envfile" ]; then
+        local db_url=$(grep "^DATABASE_URL=" "$envfile" 2>/dev/null | head -n1)
+        if [ -n "$db_url" ]; then
+            db_url="${db_url#DATABASE_URL=}"
+            db_url="${db_url%\"}"
+            db_url="${db_url#\"}"
+            
+            # Parse postgresql://USER:PASS@host/db or postgresql://USER@host/db
+            if [[ "$db_url" =~ postgresql://([^:@/]+) ]]; then
+                local extracted_user="${BASH_REMATCH[1]}"
+                if [ -n "$extracted_user" ] && [ "$extracted_user" != "localhost" ] && [ "$extracted_user" != "127.0.0.1" ]; then
+                    echo "$extracted_user"
+                    return 0
+                fi
+            fi
+        fi
+        
+        # Priority 2: Check DB_USER in .env
+        local db_user=$(grep "^DB_USER=" "$envfile" 2>/dev/null | head -n1)
+        if [ -n "$db_user" ]; then
+            db_user="${db_user#DB_USER=}"
+            db_user="${db_user%\"}"
+            db_user="${db_user#\"}"
+            if [ -n "$db_user" ]; then
+                echo "$db_user"
+                return 0
+            fi
+        fi
+    fi
+    
+    # Priority 3: Fallback to OS user (Termux user)
+    local os_user=$(whoami 2>/dev/null || id -un 2>/dev/null || echo "postgres")
+    echo "$os_user"
+    return 0
+}
+
+setup_postgres_env() {
+    local app_path="$1"
+    local detected_user
+    
+    detected_user=$(get_postgres_user "$app_path")
+    
+    echo ""
+    echo -e "${BOLD}${C}═══════════════════════════════════════${X}"
+    echo -e "${BOLD}${C}   PostgreSQL User Detection${X}"
+    echo -e "${BOLD}${C}═══════════════════════════════════════${X}"
+    echo "  Detected user: ${G}${BOLD}$detected_user${X}"
+    
+    # Verify user exists in PostgreSQL (non-blocking check)
+    if command -v psql &>/dev/null; then
+        if psql -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$detected_user'" 2>/dev/null | grep -q 1; then
+            echo "  Role status : ${G}✓ EXISTS${X}"
+        else
+            echo "  Role status : ${Y}! NOT FOUND${X}"
+            echo ""
+            echo -e "${Y}⚠ Role '$detected_user' belum ada di PostgreSQL${X}"
+            echo ""
+            echo -e "${BOLD}Opsi:${X}"
+            echo "  1. Backend akan tetap coba connect (mungkin gagal)"
+            echo "  2. Buat role manual sekarang"
+            echo ""
+            
+            if confirm "Buat role '$detected_user' sekarang?"; then
+                if psql -d postgres -c "CREATE ROLE \"$detected_user\" LOGIN" >/dev/null 2>&1; then
+                    msg ok "Role '$detected_user' berhasil dibuat"
+                else
+                    msg warn "Gagal membuat role (mungkin sudah ada atau permission issue)"
+                fi
+            else
+                msg info "Skip role creation"
+                echo ""
+                echo -e "${Y}Jika backend gagal connect nanti, jalankan manual:${X}"
+                echo "  psql -d postgres -c \"CREATE ROLE $detected_user LOGIN\""
+            fi
+        fi
+    fi
+    
+    echo -e "${BOLD}${C}═══════════════════════════════════════${X}"
+    echo ""
+    
+    # Export PGUSER for Node.js pg library
+    export PGUSER="$detected_user"
+    
+    # Return user for script injection
+    echo "$detected_user"
+    return 0
+}
+
+# ---------------------------
 # Framework detection for backend
 # ---------------------------
 detect_framework_and_cmd() {
@@ -551,21 +647,6 @@ detect_framework_and_cmd() {
     
     # Default for Node.js projects
     echo "npm start"
-}
-
-adjust_cmd_for_bind() {
-    local cmd="$1"
-    local port="$2"
-    
-    # If command is just a port number, it means detect failed
-    if [[ "$cmd" =~ ^[0-9]+$ ]]; then
-        echo "npm start"
-        return
-    fi
-    
-    # Don't add PORT prefix - it will be exported as environment variable
-    # Just return the command as-is
-    echo "$cmd"
 }
 
 get_available_port() {
@@ -662,7 +743,6 @@ start_service() {
     if command -v psql &>/dev/null; then
         msg info "Setting up PostgreSQL..."
         start_postgres || msg warn "Postgres not available"
-        create_db_from_env "$num" "$full_path" || true
     fi
     
     local final_port
@@ -706,7 +786,15 @@ start_service() {
     msg info "  Command: $cmd"
     msg info "  Port: $final_port"
     
-    # Create startup script with proper quoting
+    # ========================================
+    # NEW v4.0.5: PostgreSQL User Setup
+    # ========================================
+    msg info "Configuring PostgreSQL connection..."
+    local pguser
+    pguser=$(setup_postgres_env "$full_path")
+    msg ok "PGUSER set to: ${G}$pguser${X}"
+    
+    # Create startup script with proper quoting AND PGUSER injection
     cat > "$start_script" <<'EOFSCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 cd "PROJECT_PATH_PLACEHOLDER" || exit 1
@@ -724,6 +812,10 @@ export PORT="PORT_PLACEHOLDER"
 export HOSTNAME="0.0.0.0"
 export NODE_ENV="${NODE_ENV:-development}"
 
+# CRITICAL v4.0.5: Export PostgreSQL user for Node.js pg library
+# This fixes "no PostgreSQL user name specified in startup packet" error
+export PGUSER="PGUSER_PLACEHOLDER"
+
 # Execute the command with stdin redirected to /dev/null
 # This prevents EBADF errors with nodemon and other interactive tools
 exec < /dev/null
@@ -733,6 +825,7 @@ EOFSCRIPT
     # Replace placeholders with proper escaping
     sed -i "s|PROJECT_PATH_PLACEHOLDER|$full_path|g" "$start_script"
     sed -i "s|PORT_PLACEHOLDER|$final_port|g" "$start_script"
+    sed -i "s|PGUSER_PLACEHOLDER|$pguser|g" "$start_script"
     sed -i "s|CMD_PLACEHOLDER|$cmd|g" "$start_script"
     
     chmod +x "$start_script"
@@ -753,79 +846,140 @@ EOFSCRIPT
         echo ""
         msg info "Checking log file for errors..."
         if [ -f "$log_file" ]; then
-            echo -e "${R}--- Last 50 lines of log ---${X}"
-            tail -n 50 "$log_file"
-            echo -e "${R}--- End Log ---${X}"
+            echo -e "${R}━━━ ERROR DETAILS ━━━${X}"
+            # Show MODULE_NOT_FOUND errors specifically
+            if grep -q "MODULE_NOT_FOUND\|Cannot find module" "$log_file"; then
+                echo -e "${Y}Missing Module Detected:${X}"
+                grep -A 2 "MODULE_NOT_FOUND\|Cannot find module" "$log_file" | tail -n 10
+                echo ""
+                msg err "Aplikasi Anda membutuhkan module yang tidak terinstall!"
+                echo ""
+                echo -e "${BOLD}Solusi:${X}"
+                echo "  1. Cek package.json apakah semua dependencies sudah benar"
+                echo "  2. Jalankan: cd '$full_path' && npm install"
+                echo "  3. Atau gunakan menu 5 untuk install dependencies"
+            else
+                tail -n 30 "$log_file"
+            fi
+            echo -e "${R}━━━━━━━━━━━━━━━━━━━━${X}"
         fi
         echo ""
-        msg info "Possible issues:"
-        echo "  1. Missing dependencies - check package.json"
-        echo "  2. Module not found - run: cd '$full_path' && npm install"
-        echo "  3. Wrong start command in package.json"
-        echo "  4. Port already in use"
-        echo "  5. Database connection error"
-        echo ""
-        msg info "To fix:"
-        echo "  • Use menu 5 to install dependencies"
-        echo "  • Check log: tail -f $log_file"
-        echo "  • Manually test: cd '$full_path' && $cmd"
         rm -f "$pid_file" "$port_file" || true
         return 1
     fi
     
-    # Check log for errors even if process is running
+    # Check log for critical errors
     if [ -f "$log_file" ]; then
-        local error_count=$(grep -i "error\|crash\|exception\|MODULE_NOT_FOUND" "$log_file" 2>/dev/null | wc -l || echo 0)
-        if [ "$error_count" -gt 0 ]; then
-            msg warn "Found $error_count errors in log. Server might not be working correctly."
+        sleep 2  # Wait a bit more for logs to populate
+        
+        # Check for MODULE_NOT_FOUND specifically
+        if grep -q "MODULE_NOT_FOUND\|Cannot find module" "$log_file"; then
+            msg err "CRITICAL: Missing required modules!"
             echo ""
-            echo -e "${Y}--- Recent errors ---${X}"
-            grep -i "error\|crash\|exception\|MODULE_NOT_FOUND" "$log_file" 2>/dev/null | tail -n 10 || true
+            echo -e "${Y}Missing modules detected:${X}"
+            grep "Cannot find module" "$log_file" | sed "s/.*'\(.*\)'.*/  - \1/" | sort -u | head -n 5
             echo ""
-            msg warn "Server process is running but might not be responding to requests"
-            msg info "Check full log: tail -f $log_file"
+            msg info "Aplikasi crash karena module tidak ditemukan"
             echo ""
+            echo -e "${BOLD}Fix Steps:${X}"
+            echo "  1. Stop server (menu 4)"
+            echo "  2. Install dependencies (menu 5)"
+            echo "  3. Atau manual: cd '$full_path' && npm install"
+            echo "  4. Start ulang (menu 3)"
+            echo ""
+        elif grep -q "EADDRINUSE" "$log_file"; then
+            msg err "CRITICAL: Port $final_port already in use!"
+            echo ""
+            msg info "Port sudah dipakai oleh aplikasi lain"
+            echo ""
+            echo -e "${BOLD}Fix Steps:${X}"
+            echo "  1. Gunakan port lain (edit config di menu 11)"
+            echo "  2. Atau stop aplikasi yang pakai port tersebut"
+            kill "$new_pid" 2>/dev/null || true
+            rm -f "$pid_file" "$port_file" || true
+            return 1
+        elif grep -q "no PostgreSQL user name specified" "$log_file"; then
+            msg err "CRITICAL: PostgreSQL user not set!"
+            echo ""
+            msg info "PGUSER=$pguser sudah di-export tapi masih error"
+            echo ""
+            echo -e "${BOLD}Troubleshooting:${X}"
+            echo "  1. Pastikan role '$pguser' ada: psql -c '\\du'"
+            echo "  2. Buat role: psql -c \"CREATE ROLE $pguser LOGIN\""
+            echo "  3. Update DATABASE_URL dengan username eksplisit"
+            echo ""
+        else
+            local error_count=$(grep -i "error.*:\|exception\|crash" "$log_file" 2>/dev/null | wc -l || echo 0)
+            if [ "$error_count" -gt 0 ]; then
+                msg warn "Found $error_count potential errors in log"
+                echo ""
+                echo -e "${Y}━━━ Recent Issues ━━━${X}"
+                grep -i "error.*:\|exception\|crash" "$log_file" 2>/dev/null | tail -n 5 || true
+                echo -e "${Y}━━━━━━━━━━━━━━━━━━━━${X}"
+                echo ""
+                msg info "Server mungkin dalam proses restart atau recovery"
+            fi
         fi
     fi
     
     # Try to verify server is actually listening on the port
-    sleep 2
+    sleep 3
+    local port_listening=false
     if command -v ss &>/dev/null; then
-        if ! ss -tuln 2>/dev/null | grep -q ":$final_port "; then
-            msg warn "Server process running but not listening on port $final_port"
-            msg info "This usually means the app crashed or is still starting"
+        if ss -tuln 2>/dev/null | grep -q ":$final_port "; then
+            port_listening=true
+            msg ok "Server successfully listening on port $final_port"
+        else
+            msg warn "Server not yet listening on port $final_port"
             echo ""
+            msg info "Kemungkinan:"
+            echo "  • Server masih starting (tunggu beberapa detik)"
+            echo "  • Ada error di aplikasi (cek log untuk detail)"
+            echo "  • Nodemon dalam restart loop"
+            echo ""
+            msg info "Monitor log: tail -f $log_file"
         fi
     fi
     
-    # Verify server is responding (optional check)
-    local check_count=0
-    local max_checks=5
-    while [ $check_count -lt $max_checks ]; do
-        if curl -s -o /dev/null -w "%{http_code}" "http://localhost:$final_port" >/dev/null 2>&1; then
-            break
-        fi
-        sleep 1
-        check_count=$((check_count + 1))
-    done
-    
     local ip; ip=$(get_device_ip)
-    msg ok "Server started and running!"
+    
+    echo ""
+    echo -e "${BOLD}════════════════════════════════════════${X}"
+    if [ "$port_listening" = true ]; then
+        msg ok "✓ Server started successfully!"
+    else
+        msg warn "⚠ Server launched but status unclear"
+    fi
+    echo -e "${BOLD}════════════════════════════════════════${X}"
     echo ""
     echo -e "${BOLD}Server Information:${X}"
     echo -e "  ${G}→${X} PID: $new_pid"
     echo -e "  ${G}→${X} Port: $final_port"
     echo -e "  ${G}→${X} Directory: $full_path"
+    echo -e "  ${G}→${X} PGUSER: $pguser"
     echo ""
     echo -e "${BOLD}Access URLs:${X}"
     echo -e "  ${G}→${X} Network: http://$ip:$final_port"
     echo -e "  ${G}→${X} Local: http://localhost:$final_port"
     echo ""
-    echo -e "${BOLD}Logs:${X}"
-    echo -e "  ${G}→${X} File: $log_file"
-    echo -e "  ${G}→${X} Live: tail -f $log_file"
+    echo -e "${BOLD}Logs & Monitoring:${X}"
+    echo -e "  ${G}→${X} Log file: $log_file"
+    echo -e "  ${G}→${X} Live tail: tail -f $log_file"
+    echo -e "  ${G}→${X} Check status: menu 14"
+    echo -e "  ${G}→${X} Test connection: menu 15"
     echo ""
-    msg info "Server akan terus berjalan hingga di-stop manual atau Termux ditutup"
+    
+    if [ "$port_listening" = false ]; then
+        echo -e "${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
+        echo -e "${BOLD}${Y}⚠ TROUBLESHOOTING TIPS:${X}"
+        echo -e "${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
+        echo "  1. Tunggu 10-15 detik, aplikasi mungkin masih starting"
+        echo "  2. Gunakan menu 15 untuk test server connection"
+        echo "  3. Cek log: tail -f $log_file"
+        echo "  4. Jika ada MODULE_NOT_FOUND, gunakan menu 5"
+        echo -e "${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
+        echo ""
+    fi
     
     return 0
 }
@@ -948,9 +1102,8 @@ edit_env() {
 }
 
 # ---------------------------
-# Database helpers
+# Database helpers (Simplified - No Auto Create)
 # ---------------------------
-# 1) parse_db_config_from_env (lebih robust; meng-handle DATABASE_URL dengan/ tanpa user:pass)
 parse_db_config_from_env() {
     local envfile="$1"
     DB_HOST="${DEFAULT_DB_HOST}"
@@ -996,11 +1149,9 @@ parse_db_config_from_env() {
             url="${url%\"}"
             url="${url#\"}"
 
-            # only parse postgresql:// style
             if [[ "$url" == postgresql://* ]]; then
                 url="${url#postgresql://}"
 
-                # split userinfo (optional) and hostinfo
                 local userinfo=""
                 local hostpart="$url"
                 if [[ "$url" == *@* ]]; then
@@ -1008,7 +1159,6 @@ parse_db_config_from_env() {
                     hostpart="${url#*@}"
                 fi
 
-                # parse userinfo
                 if [ -n "$userinfo" ]; then
                     if [[ "$userinfo" == *:* ]]; then
                         DB_USER="${userinfo%%:*}"
@@ -1019,12 +1169,10 @@ parse_db_config_from_env() {
                     fi
                 fi
 
-                # parse hostpart -> host:port/dbname
-                # ensure hostpart contains a slash (db part)
                 if [[ "$hostpart" == */* ]]; then
                     local hostport="${hostpart%%/*}"
                     local dbpart="${hostpart#*/}"
-                    DB_NAME="${dbpart%%\?*}"        # ignore possible query params
+                    DB_NAME="${dbpart%%\?*}"
                 else
                     local hostport="$hostpart"
                     DB_NAME=""
@@ -1034,7 +1182,6 @@ parse_db_config_from_env() {
                     DB_HOST="${hostport%%:*}"
                     DB_PORT="${hostport#*:}"
                 else
-                    # host might be empty (e.g. postgresql:///mydb) -> treat as localhost / socket
                     if [ -z "$hostport" ]; then
                         DB_HOST="${DEFAULT_DB_HOST}"
                     else
@@ -1042,7 +1189,6 @@ parse_db_config_from_env() {
                     fi
                 fi
 
-                # fallback defaults
                 DB_PORT="${DB_PORT:-$DEFAULT_DB_PORT}"
                 DB_HOST="${DB_HOST:-$DEFAULT_DB_HOST}"
             fi
@@ -1053,121 +1199,6 @@ parse_db_config_from_env() {
     return 0
 }
 
-# 2) create_role_if_needed (DIUBAH: tidak auto-create role secara default)
-#    Jika kamu memang ingin auto-create role, set env AUTO_CREATE_DB_ROLE=1 di .dapps.conf atau .env
-create_role_if_needed() {
-    local user="$1"
-    local pass="$2"
-
-    # Safety: jangan auto-create role kecuali eksplisit diizinkan
-    # Default: skip role creation (sesuai permintaan "tanpa role")
-    if [ "${AUTO_CREATE_DB_ROLE:-0}" != "1" ]; then
-        msg info "Skipping role creation for '$user' (AUTO_CREATE_DB_ROLE not enabled)"
-        return 0
-    fi
-
-    [ -z "$user" ] && return 0
-
-    # create only if not exist
-    if psql -Atqc "SELECT 1 FROM pg_roles WHERE rolname='${user}'" 2>/dev/null | grep -q 1; then
-        return 0
-    fi
-
-    if [ -z "$pass" ]; then
-        psql -d postgres -c "CREATE ROLE \"$user\" WITH LOGIN;" >/dev/null 2>&1 || return 1
-    else
-        psql -d postgres -c "CREATE ROLE \"$user\" WITH LOGIN PASSWORD '$pass';" >/dev/null 2>&1 || return 1
-    fi
-}
-
-# 3) create_db_if_needed (aman: jika owner tidak ada, buat tanpa owner)
-create_db_if_needed() {
-    local db="$1"
-    local owner="$2"
-
-    # already exists?
-    if psql -Atqc "SELECT 1 FROM pg_database WHERE datname='${db}'" 2>/dev/null | grep -q 1; then
-        return 0
-    fi
-
-    # try to create with owner if owner exists, otherwise create without owner
-    if [ -n "$owner" ]; then
-        if psql -Atqc "SELECT 1 FROM pg_roles WHERE rolname='${owner}'" 2>/dev/null | grep -q 1; then
-            psql -d postgres -c "CREATE DATABASE \"${db}\" OWNER \"${owner}\";" >/dev/null 2>&1 || return 1
-        else
-            msg warn "Owner role '$owner' does not exist — creating database without explicit owner"
-            psql -d postgres -c "CREATE DATABASE \"${db}\";" >/dev/null 2>&1 || return 1
-        fi
-    else
-        psql -d postgres -c "CREATE DATABASE \"${db}\";" >/dev/null 2>&1 || return 1
-    fi
-
-    return 0
-}
-
-# 4) create_db_from_env (ubah: skip role creation, buat DB tanpa owner bila perlu)
-create_db_from_env() {
-    local num="$1"
-    local app_path="$2"
-    # load_project "$num" || return 1   # caller sudah memanggil load_project
-
-    local envfile="$app_path/.env"
-
-    [ ! -f "$envfile" ] && {
-        msg warn ".env tidak ditemukan"
-        return 1
-    }
-
-    parsed=$(parse_db_config_from_env "$envfile") || {
-        msg err "Gagal parse .env"
-        return 1
-    }
-
-    IFS='|' read -r DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD <<< "$parsed"
-
-    if [ -z "$DB_NAME" ]; then
-        msg warn "DB_NAME tidak ditemukan di .env"
-        read -rp "Masukkan DB_NAME untuk database baru (contoh: myapp_db) [kosong = skip]: " DB_NAME
-        if [ -z "$DB_NAME" ]; then
-            msg warn "DB_NAME tidak diberikan. Skip auto-create."
-            return 1
-        fi
-
-        # validate
-        if [[ ! "$DB_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
-            msg err "DB_NAME hanya boleh huruf, angka, underscore"
-            return 1
-        fi
-
-        # persist minimal config
-        echo "" >> "$envfile"
-        echo "# Database Configuration (auto-added)" >> "$envfile"
-        echo "DB_NAME=$DB_NAME" >> "$envfile"
-        echo "DB_HOST=${DB_HOST:-$DEFAULT_DB_HOST}" >> "$envfile"
-        echo "DB_PORT=${DB_PORT:-$DEFAULT_DB_PORT}" >> "$envfile"
-        echo "DB_USER=${DB_USER:-}" >> "$envfile"
-        echo "DATABASE_URL=postgresql://${DB_USER:+$DB_USER}${DB_USER:+:${DB_PASSWORD}}@${DB_HOST}:${DB_PORT}/${DB_NAME}" >> "$envfile" 2>/dev/null || true
-        msg ok "Database config ditambahkan ke .env"
-    fi
-
-    # only handle local DB auto-create; remote hosts are skipped
-    if [ "$DB_HOST" != "127.0.0.1" ] && [ "$DB_HOST" != "localhost" ]; then
-        msg warn "DB_HOST bukan lokal ($DB_HOST). Skip auto-create."
-        return 1
-    fi
-
-    # do NOT auto-create role unless explicitly allowed (see create_role_if_needed)
-    create_role_if_needed "$DB_USER" "$DB_PASSWORD" || msg warn "create_role_if_needed failed (ignored)"
-
-    # create database: if owner exists it will be used, otherwise database is created without owner
-    create_db_if_needed "$DB_NAME" "$DB_USER" || {
-        msg err "Gagal membuat DB $DB_NAME"
-        return 1
-    }
-
-    msg ok "DB $DB_NAME siap (host=$DB_HOST port=$DB_PORT user='${DB_USER:-(none)}')"
-    return 0
-}
 # ---------------------------
 # Run/Stop project
 # ---------------------------
@@ -1564,6 +1595,7 @@ view_logs() {
     echo ""
     echo -e "${C}--- Sync Log (last 30 lines) ---${X}"
     echo "File: $sync_log"
+   
     if [ -f "$sync_log" ]; then
         tail -n 30 "$sync_log"
     else
@@ -1656,6 +1688,13 @@ diagnose_and_fix() {
     status_postgres || msg warn "Install: pkg install postgresql"
     
     echo ""
+    msg info "Checking PostgreSQL roles..."
+    if command -v psql &>/dev/null; then
+        echo "Available roles:"
+        psql -d postgres -c "\du" 2>/dev/null || msg warn "Could not list roles"
+    fi
+    
+    echo ""
     msg info "Checking config file..."
     if [ -f "$CONFIG_FILE" ] && [ -s "$CONFIG_FILE" ]; then
         local count=$(wc -l < "$CONFIG_FILE")
@@ -1691,9 +1730,12 @@ diagnose_and_fix() {
     fi
     
     echo ""
-    msg info "Logs directory: $LOG_DIR"
-    msg info "Projects directory: $PROJECTS_DIR"
-    msg info "Config file: $CONFIG_FILE"
+    msg info "Environment:"
+    echo "  OS User: $(whoami)"
+    echo "  Logs: $LOG_DIR"
+    echo "  Projects: $PROJECTS_DIR"
+    echo "  Config: $CONFIG_FILE"
+    echo "  PG Data: $PG_DATA"
     
     wait_key
 }
