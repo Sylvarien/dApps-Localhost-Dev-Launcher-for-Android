@@ -1,17 +1,12 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================================
-# DApps Backend Server Launcher - Professional v4.0.2 (Fokus Backend Saja)
+# DApps Backend Server Launcher - Professional v4.0.3 (Fixed)
 # 
-# CHANGES:
-# ✅ Hapus semua fitur frontend, fokus hanya pada backend server.
-# ✅ Mirip railway.com: Host backend app dengan PostgreSQL, env management, logs, auto-restart, backup.
-# ✅ Config simplified: Hanya app_dir (sebelumnya be_dir), app_port, app_cmd.
-# ✅ Menu diubah fokus backend.
-# ✅ Auto-setup DATABASE_URL jika DB_NAME kosong.
-# ✅ Create/edit .env jika belum ada atau ingin edit.
-# ✅ Tampilkan log langsung jika gagal start.
-# ✅ Fix: Ganti regex parsing DATABASE_URL dengan string manipulation untuk hindari syntax error di conditional expression.
-# ✅ Fix: Ubah regex di prompt_open_path_after_list untuk menghindari syntax error di conditional expression.
+# CHANGES v4.0.3:
+# ✅ Fixed all syntax errors in conditional expressions
+# ✅ Fixed variable substitutions in strings
+# ✅ Fixed regex patterns causing syntax errors
+# ✅ Improved error handling and validation
 # ============================================================================
 
 set -euo pipefail
@@ -23,7 +18,7 @@ PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 PROJECTS_DIR="$HOME/dapps-projects"
 CONFIG_FILE="$HOME/.dapps.conf"
 LOG_DIR="$HOME/.dapps-logs"
-LAUNCHER_VERSION="4.0.2"
+LAUNCHER_VERSION="4.0.3"
 
 DB_VIEWER_DIR="${DB_VIEWER_DIR:-$HOME/paxiforge-db-viewer}"
 DB_VIEWER_PORT="${DB_VIEWER_PORT:-8081}"
@@ -49,17 +44,17 @@ touch "$CONFIG_FILE"
 # ---------------------------
 msg() {
     case "$1" in
-        ok)   echo -e "\( {G}✓ \){X} $2" ;;
-        err)  echo -e "\( {R}✗ \){X} $2" ;;
-        warn) echo -e "\( {Y}! \){X} $2" ;;
-        info) echo -e "\( {B}i \){X} $2" ;;
+        ok)   echo -e "${G}✓${X} $2" ;;
+        err)  echo -e "${R}✗${X} $2" ;;
+        warn) echo -e "${Y}!${X} $2" ;;
+        info) echo -e "${B}i${X} $2" ;;
         *)    echo -e "$1" ;;
     esac
 }
 
 confirm() {
     read -rp "$1 (y/N): " ans
-    [[ "\( ans" =~ ^[Yy] \) ]]
+    [[ "$ans" =~ ^[Yy] ]]
 }
 
 get_device_ip() {
@@ -75,7 +70,7 @@ get_device_ip() {
         [ -n "$ip" ] && { echo "$ip"; return 0; }
     fi
     
-    if command -v ifconfig >/dev/null 2>&1; then
+    if command -v ifconfig >/dev/null 2>/dev/null; then
         ip=$(ifconfig 2>/dev/null | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | head -n1 || true)
         [ -n "$ip" ] && { echo "$ip"; return 0; }
     fi
@@ -84,7 +79,7 @@ get_device_ip() {
 }
 
 wait_key() {
-    echo -e "\n\( {C}Tekan ENTER untuk kembali... \){X}"
+    echo -e "\n${C}Tekan ENTER untuk kembali...${X}"
     read -r
 }
 
@@ -99,7 +94,7 @@ md5_file() {
 }
 
 # ---------------------------
-# Config format (Simplified):
+# Config format:
 # name|local_path|source_path|app_dir|app_port|app_cmd|auto_restart|auto_sync
 # ---------------------------
 
@@ -114,7 +109,7 @@ save_project() {
     local updated=false
     
     while IFS='|' read -r old_name old_path old_src old_app old_app_port old_app_cmd old_ar old_as || [ -n "$old_name" ]; do
-        if [ $current_line -eq $num ]; then
+        if [ "$current_line" -eq "$num" ]; then
             printf "%s|%s|%s|%s|%s|%s|%s|%s\n" \
                 "$name" "$local_path" "$source_path" "$app_dir" "$app_port" "$app_cmd" "$auto_restart" "$auto_sync" >> "$tmp_file"
             updated=true
@@ -141,13 +136,13 @@ load_project() {
         return 1
     fi
     
-    if ! [[ "\( num" =~ ^[0-9]+ \) ]]; then
+    if ! [[ "$num" =~ ^[0-9]+$ ]]; then
         msg err "Nomor harus angka!"
         return 1
     fi
     
     local line
-    line=\( (sed -n " \){num}p" "$CONFIG_FILE" 2>/dev/null || true)
+    line=$(sed -n "${num}p" "$CONFIG_FILE" 2>/dev/null || true)
     
     if [ -z "$line" ]; then
         msg err "Project #$num tidak ditemukan"
@@ -201,8 +196,8 @@ copy_storage_to_termux() {
     
     mkdir -p "$dest" "$dest/.dapps" 2>/dev/null || true
 
-    local tmp_log="\( LOG_DIR/rsync_tmp_ \){proj_num}.out"
-    local final_log="\( LOG_DIR/ \){proj_num}_sync.log"
+    local tmp_log="${LOG_DIR}/rsync_tmp_${proj_num}.out"
+    local final_log="${LOG_DIR}/${proj_num}_sync.log"
     : > "$tmp_log"
 
     msg info "Syncing: $(path_type "$src") → $dest"
@@ -226,7 +221,7 @@ copy_storage_to_termux() {
 {
   "files": $files,
   "bytes": $total_bytes,
-  "human_size": "$(numfmt --to=iec-i --suffix=B \( total_bytes 2>/dev/null || echo " \){total_bytes}B")",
+  "human_size": "$(numfmt --to=iec-i --suffix=B $total_bytes 2>/dev/null || echo "${total_bytes}B")",
   "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
 EOF
@@ -243,7 +238,7 @@ EOF
                 cat "$tmp_log"
             } > "$final_log"
             
-            msg ok "Synced: $files files, $(numfmt --to=iec-i --suffix=B \( total_bytes 2>/dev/null || echo " \){total_bytes}B")"
+            msg ok "Synced: $files files, $(numfmt --to=iec-i --suffix=B $total_bytes 2>/dev/null || echo "${total_bytes}B")"
         else
             msg err "rsync gagal. Lihat $tmp_log"
             return 1
@@ -263,7 +258,7 @@ EOF
 {
   "files": $cnt,
   "bytes": $bytes,
-  "human_size": "$(numfmt --to=iec-i --suffix=B \( bytes 2>/dev/null || echo " \){bytes}B")",
+  "human_size": "$(numfmt --to=iec-i --suffix=B $bytes 2>/dev/null || echo "${bytes}B")",
   "method": "tar-fallback",
   "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
@@ -302,7 +297,7 @@ sync_project_by_num() {
 
 sync_project() {
     header
-    echo -e "\( {BOLD}Sync Project \){X}\n"
+    echo -e "${BOLD}Sync Project${X}\n"
     echo "1) Sync by project number"
     echo "2) Sync ALL projects yang punya source_path"
     echo "0) Kembali"
@@ -356,11 +351,11 @@ list_projects_table() {
         return 1
     fi
     
-    echo -e "\( {BOLD}┌─────────────────────────────────────────────────────────────────────────────┐ \){X}"
-    echo -e "\( {BOLD}│                            PROJECT LIST                                     │ \){X}"
-    echo -e "\( {BOLD}└─────────────────────────────────────────────────────────────────────────────┘ \){X}"
+    echo -e "${BOLD}┌─────────────────────────────────────────────────────────────────────────────┐${X}"
+    echo -e "${BOLD}│                            PROJECT LIST                                     │${X}"
+    echo -e "${BOLD}└─────────────────────────────────────────────────────────────────────────────┘${X}"
     echo ""
-    echo -e "\( {BOLD}No. | Status | Name                  | Source      | App Dir \){X}"
+    echo -e "${BOLD}No. | Status | Name                  | Source      | App Dir${X}"
     echo "-------------------------------------------------------------------------------------"
     
     local line_num=0
@@ -368,16 +363,16 @@ list_projects_table() {
         line_num=$((line_num + 1))
         [ -z "$name" ] && continue
         
-        local status="\( {G}✓ \){X}"
-        [ ! -d "\( local_path" ] && status=" \){R}✗${X}"
+        local status="${G}✓${X}"
+        [ ! -d "$local_path" ] && status="${R}✗${X}"
         
         local running=""
-        local pid_file="\( LOG_DIR/ \){line_num}_server.pid"
+        local pid_file="${LOG_DIR}/${line_num}_server.pid"
         
         if [ -f "$pid_file" ]; then
             local pid=$(cat "$pid_file" 2>/dev/null || true)
             if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                running=" \( {G}[RUN] \){X}"
+                running=" ${G}[RUN]${X}"
             fi
         fi
         
@@ -385,19 +380,19 @@ list_projects_table() {
         app_dir="${app_dir:-(none)}"
         
         printf "%-3s | %-6s | %-21s | %-11s | %-9s%s\n" \
-            "$line_num" "\( status" " \){name:0:21}" "\( src_type" " \){app_dir:0:9}" "$running"
+            "$line_num" "$status" "${name:0:21}" "$src_type" "${app_dir:0:9}" "$running"
     done < "$CONFIG_FILE"
     
     echo ""
     
-    if [ $line_num -eq 0 ]; then
+    if [ "$line_num" -eq 0 ]; then
         msg warn "Belum ada project! Tambahkan dengan menu 2"
         return 1
     fi
     
-    echo -e "\( {C}💡 Tips: \){X}"
-    echo "  - Ketik angka di kolom \( {BOLD}No. \){X} untuk pilih project"
-    echo "  - Status \( {G}[RUN] \){X} = project sedang berjalan"
+    echo -e "${C}💡 Tips:${X}"
+    echo "  - Ketik angka di kolom ${BOLD}No.${X} untuk pilih project"
+    echo "  - Status ${G}[RUN]${X} = project sedang berjalan"
     
     return 0
 }
@@ -409,10 +404,10 @@ prompt_open_path_after_list() {
     
     if [[ "$cmd" == *" info" ]]; then
         local num=$(echo "$cmd" | awk '{print $1}')
-        if [[ "\( num" =~ ^[0-9]+ \) ]]; then
+        if [[ "$num" =~ ^[0-9]+$ ]]; then
             load_project "$num" || { msg err "Project not found"; return 1; }
         
-            echo -e "\n${BOLD}=== Project Info: $PROJECT_NAME (#\( num) === \){X}"
+            echo -e "\n${BOLD}=== Project Info: $PROJECT_NAME (#${num}) ===${X}"
             echo "Local Path  : $PROJECT_PATH"
             echo "Source Path : ${SOURCE_PATH:-(none)}"
             echo "App Dir     : ${APP_DIR:-(none)}"
@@ -440,7 +435,7 @@ init_postgres_if_needed() {
         return 1
     fi
     
-    if [ ! -d "\( PG_DATA" ] || [ -z " \)(ls -A "$PG_DATA" 2>/dev/null || true)" ]; then
+    if [ ! -d "$PG_DATA" ] || [ -z "$(ls -A "$PG_DATA" 2>/dev/null || true)" ]; then
         msg info "Inisialisasi PostgreSQL di: $PG_DATA"
         initdb "$PG_DATA" || { msg err "initdb gagal"; return 1; }
         msg ok "Postgres data siap"
@@ -542,7 +537,6 @@ adjust_cmd_for_bind() {
     local cmd="$1"
     local port="$2"
     
-    # Adjust for common frameworks
     if echo "$cmd" | grep -q "npm start"; then
         echo "PORT=$port $cmd"
         return
@@ -578,7 +572,7 @@ get_available_port() {
 }
 
 # ---------------------------
-# Start/Stop services (Fokus backend/server)
+# Start/Stop services
 # ---------------------------
 start_service() {
     local num="$1"
@@ -591,9 +585,9 @@ start_service() {
         return 1
     fi
     
-    local pid_file="\( LOG_DIR/ \){num}_server.pid"
-    local log_file="\( LOG_DIR/ \){num}_server.log"
-    local port_file="\( LOG_DIR/ \){num}_server.port"
+    local pid_file="${LOG_DIR}/${num}_server.pid"
+    local log_file="${LOG_DIR}/${num}_server.log"
+    local port_file="${LOG_DIR}/${num}_server.port"
     
     if [ -f "$pid_file" ]; then
         local pid=$(cat "$pid_file" 2>/dev/null || true)
@@ -635,9 +629,9 @@ start_service() {
     [ "$final_port" != "$port" ] && msg warn "Port $port in use, using $final_port"
     
     if [ -f "$full_path/package.json" ]; then
-        local pkgsum_file="\( LOG_DIR/ \){num}_server_pkgsum"
+        local pkgsum_file="${LOG_DIR}/${num}_server_pkgsum"
         local cur_sum; cur_sum=$(md5_file "$full_path/package.json" || true)
-        local prev_sum=""; [ -f "\( pkgsum_file" ] && prev_sum= \)(cat "$pkgsum_file" 2>/dev/null || true)
+        local prev_sum=""; [ -f "$pkgsum_file" ] && prev_sum=$(cat "$pkgsum_file" 2>/dev/null || true)
         
         if [ -n "$cur_sum" ] && [ "$cur_sum" != "$prev_sum" ]; then
             msg info "package.json changed → installing"
@@ -677,17 +671,17 @@ start_service() {
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
         local ip; ip=$(get_device_ip)
         msg ok "Server started!"
-        echo -e "  \( {G}→ \){X} PID: $pid"
-        echo -e "  \( {G}→ \){X} Port: $final_port"
-        echo -e "  \( {G}→ \){X} URL: http://$ip:$final_port"
-        echo -e "  \( {G}→ \){X} Local: http://localhost:$final_port"
+        echo -e "  ${G}→${X} PID: $pid"
+        echo -e "  ${G}→${X} Port: $final_port"
+        echo -e "  ${G}→${X} URL: http://$ip:$final_port"
+        echo -e "  ${G}→${X} Local: http://localhost:$final_port"
         return 0
     else
         msg err "Server failed to start."
         if [ -f "$log_file" ]; then
-            echo -e "\( {R}--- Log Content --- \){X}"
+            echo -e "${R}--- Log Content ---${X}"
             cat "$log_file"
-            echo -e "\( {R}--- End Log --- \){X}"
+            echo -e "${R}--- End Log ---${X}"
         fi
         rm -f "$pid_file" "$port_file" || true
         return 1
@@ -697,8 +691,8 @@ start_service() {
 stop_service() {
     local num="$1"
     
-    local pid_file="\( LOG_DIR/ \){num}_server.pid"
-    local port_file="\( LOG_DIR/ \){num}_server.port"
+    local pid_file="${LOG_DIR}/${num}_server.pid"
+    local port_file="${LOG_DIR}/${num}_server.port"
     
     [ ! -f "$pid_file" ] && {
         msg info "Server not running"
@@ -865,7 +859,7 @@ parse_db_config_from_env() {
         fi
     done < "$envfile"
     
-    echo "\( {DB_HOST}| \){DB_PORT}|\( {DB_NAME}| \){DB_USER}|${DB_PASSWORD}"
+    echo "${DB_HOST}|${DB_PORT}|${DB_NAME}|${DB_USER}|${DB_PASSWORD}"
     return 0
 }
 
@@ -965,7 +959,7 @@ run_project_by_num() {
     }
     
     header
-    echo -e "${BOLD}Starting: $PROJECT_NAME (#\( num) \){X}\n"
+    echo -e "${BOLD}Starting: $PROJECT_NAME (#${num})${X}\n"
     
     if [ -z "$APP_DIR" ] || [ "$APP_DIR" = "(none)" ]; then
         msg err "App directory belum dikonfigurasi!"
@@ -994,7 +988,7 @@ run_project_by_num() {
     msg info "Starting server..."
     echo ""
     
-    start_service "$num" "\( APP_DIR" " \){APP_PORT:-8000}" "${APP_CMD:-auto}" || {
+    start_service "$num" "$APP_DIR" "${APP_PORT:-8000}" "${APP_CMD:-auto}" || {
         msg err "Server gagal start"
     }
     
@@ -1024,7 +1018,7 @@ stop_project_by_num() {
 # ---------------------------
 add_project() {
     header
-    echo -e "\( {BOLD}Add New Project \){X}\n"
+    echo -e "${BOLD}Add New Project${X}\n"
     
     read -rp "Project name: " name
     [ -z "$name" ] && {
@@ -1067,7 +1061,7 @@ add_project() {
     fi
     
     echo ""
-    echo -e "\( {BOLD}Konfigurasi Folder (WAJIB!) \){X}"
+    echo -e "${BOLD}Konfigurasi Folder (WAJIB!)${X}"
     echo "Masukkan nama folder relatif terhadap project root"
     echo ""
     
@@ -1125,7 +1119,7 @@ edit_project_config() {
     }
     
     echo ""
-    echo -e "\( {BOLD}Current Config: \){X}"
+    echo -e "${BOLD}Current Config:${X}"
     echo "  Name       : $PROJECT_NAME"
     echo "  Path       : $PROJECT_PATH"
     echo "  Source     : ${SOURCE_PATH:-(none)}"
@@ -1133,7 +1127,7 @@ edit_project_config() {
     echo "  App port   : ${APP_PORT:-8000}"
     echo "  App command: ${APP_CMD:-auto}"
     echo ""
-    echo -e "\( {Y}Kosongkan untuk tidak mengubah \){X}"
+    echo -e "${Y}Kosongkan untuk tidak mengubah${X}"
     echo ""
     
     read -rp "New source path: " new_source
@@ -1154,7 +1148,8 @@ edit_project_config() {
                  "${APP_DIR:-(none)}" \
                  "${APP_PORT:-8000}" \
                  "${APP_CMD:-auto}" \
-                 "\( {AUTO_RESTART:-0}" " \){AUTO_SYNC:-0}"
+                 "${AUTO_RESTART:-0}" \
+                 "${AUTO_SYNC:-0}"
     
     msg ok "Config updated!"
     wait_key
@@ -1195,7 +1190,7 @@ delete_project() {
     
     sed -i "${num}d" "$CONFIG_FILE"
     
-    rm -f "\( LOG_DIR/ \){num}_"*.{pid,log,port,out} 2>/dev/null || true
+    rm -f "${LOG_DIR}/${num}_"*.{pid,log,port,out} 2>/dev/null || true
     
     msg ok "Project removed from launcher"
     wait_key
@@ -1221,7 +1216,7 @@ view_logs() {
         return
     fi
     
-    if ! [[ "\( num" =~ ^[0-9]+ \) ]]; then
+    if ! [[ "$num" =~ ^[0-9]+$ ]]; then
         msg err "Number harus angka!"
         wait_key
         return
@@ -1234,13 +1229,13 @@ view_logs() {
     }
     
     echo ""
-    echo -e "${BOLD}=== Logs for: $PROJECT_NAME (#\( num) === \){X}"
+    echo -e "${BOLD}=== Logs for: $PROJECT_NAME (#${num}) ===${X}"
     echo ""
     
-    local server_log="\( LOG_DIR/ \){num}_server.log"
-    local sync_log="\( LOG_DIR/ \){num}_sync.log"
+    local server_log="${LOG_DIR}/${num}_server.log"
+    local sync_log="${LOG_DIR}/${num}_sync.log"
     
-    echo -e "\( {C}--- Server Log --- \){X}"
+    echo -e "${C}--- Server Log ---${X}"
     echo "File: $server_log"
     if [ -f "$server_log" ]; then
         tail -n 50 "$server_log"
@@ -1249,7 +1244,7 @@ view_logs() {
     fi
     
     echo ""
-    echo -e "\( {C}--- Sync Log --- \){X}"
+    echo -e "${C}--- Sync Log ---${X}"
     echo "File: $sync_log"
     if [ -f "$sync_log" ]; then
         tail -n 30 "$sync_log"
@@ -1258,7 +1253,7 @@ view_logs() {
     fi
     
     echo ""
-    echo -e "${Y}Tip: cat \( server_log untuk lihat full log \){X}"
+    echo -e "${Y}Tip: cat $server_log untuk lihat full log${X}"
     
     wait_key
 }
@@ -1267,7 +1262,7 @@ view_logs() {
 # Export config
 # ---------------------------
 export_config_json() {
-    local out="\( LOG_DIR/dapps_config_ \)(date +%F_%H%M%S).json"
+    local out="${LOG_DIR}/dapps_config_$(date +%F_%H%M%S).json"
     
     echo "[" > "$out"
     local first=1
@@ -1277,7 +1272,7 @@ export_config_json() {
         line_num=$((line_num + 1))
         [ -z "$name" ] && continue
         
-        [ $first -eq 1 ] || echo "," >> "$out"
+        [ "$first" -eq 1 ] || echo "," >> "$out"
         first=0
         
         cat >> "$out" <<EOF
@@ -1332,7 +1327,7 @@ check_deps() {
 
 diagnose_and_fix() {
     header
-    echo -e "\( {BOLD}System Diagnostics \){X}\n"
+    echo -e "${BOLD}System Diagnostics${X}\n"
     
     check_deps
     
@@ -1356,7 +1351,7 @@ diagnose_and_fix() {
             fi
         done < "$CONFIG_FILE"
         
-        if [ $bad_lines -gt 0 ]; then
+        if [ "$bad_lines" -gt 0 ]; then
             msg warn "$bad_lines malformed lines in config!"
         else
             msg ok "No malformed config lines"
@@ -1388,7 +1383,7 @@ diagnose_and_fix() {
 # ---------------------------
 self_update() {
     header
-    echo -e "\( {BOLD}Self Update Launcher \){X}\n"
+    echo -e "${BOLD}Self Update Launcher${X}\n"
     if confirm "Update launcher sekarang?"; then
         curl -fsSL https://raw.githubusercontent.com/Sylvarien/dApps-Localhost-Dev-Launcher-for-Android/main/installer.sh | bash
         msg ok "Update selesai. Restart launcher."
@@ -1407,13 +1402,13 @@ monitor_project() {
     load_project "$num" || return 1
     
     while true; do
-        local pid_file="\( LOG_DIR/ \){num}_server.pid"
+        local pid_file="${LOG_DIR}/${num}_server.pid"
         
         local pid=$(cat "$pid_file" 2>/dev/null || true)
         
         if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
             msg warn "Server crashed! Restarting..."
-            start_service "$num" "\( APP_DIR" " \){APP_PORT:-8000}" "${APP_CMD:-auto}"
+            start_service "$num" "$APP_DIR" "${APP_PORT:-8000}" "${APP_CMD:-auto}"
         fi
         
         sleep 30
@@ -1425,7 +1420,7 @@ monitor_project() {
 # ---------------------------
 backup_project() {
     header
-    echo -e "\( {BOLD}Backup Project \){X}\n"
+    echo -e "${BOLD}Backup Project${X}\n"
     
     list_projects_table || { msg warn "No projects"; wait_key; return; }
     
@@ -1435,7 +1430,7 @@ backup_project() {
     
     load_project "$num" || { msg err "Project not found"; wait_key; return; }
     
-    local backup_dir="$HOME/dapps-backups/\( PROJECT_NAME_ \)(date +%F_%H%M%S)"
+    local backup_dir="$HOME/dapps-backups/${PROJECT_NAME}_$(date +%F_%H%M%S)"
     mkdir -p "$backup_dir"
     
     msg info "Backing up $PROJECT_NAME to $backup_dir"
@@ -1457,7 +1452,7 @@ header() {
         line_num=$((line_num + 1))
         [ -z "$name" ] && continue
         
-        local pid_file="\( LOG_DIR/ \){line_num}_server.pid"
+        local pid_file="${LOG_DIR}/${line_num}_server.pid"
         
         if [ -f "$pid_file" ]; then
             local pid=$(cat "$pid_file" 2>/dev/null || true)
@@ -1468,10 +1463,10 @@ header() {
         fi
     done < "$CONFIG_FILE" 2>/dev/null
     
-    echo -e "\( {C} \){BOLD}╔════════════════════════════════════════════════════════╗${X}"
-    echo -e "\( {C} \){BOLD}║    DApps Backend Server Launcher — v\( {LAUNCHER_VERSION}      ║ \){X}"
-    echo -e "\( {C} \){BOLD}╚════════════════════════════════════════════════════════╝${X}\n"
-    echo -e "\( {BOLD}Running: \){X} \( {G} \){running_count}${X} projects"
+    echo -e "${C}${BOLD}╔════════════════════════════════════════════════════════╗${X}"
+    echo -e "${C}${BOLD}║    DApps Backend Server Launcher — v${LAUNCHER_VERSION}      ║${X}"
+    echo -e "${C}${BOLD}╚════════════════════════════════════════════════════════╝${X}\n"
+    echo -e "${BOLD}Running:${X} ${G}${running_count}${X} projects"
     echo ""
 }
 
@@ -1480,7 +1475,7 @@ header() {
 # ---------------------------
 show_menu() {
     header
-    echo -e "\( {BOLD}MAIN MENU \){X}\n"
+    echo -e "${BOLD}MAIN MENU${X}\n"
     echo " 1. 📋 List Projects"
     echo " 2. ➕ Add Project"
     echo " 3. ▶️  Start Project"
@@ -1495,7 +1490,7 @@ show_menu() {
     echo "12. 🔄 Self Update"
     echo "13. 🛡️ Backup Project"
     echo " 0. 🚪 Exit"
-    echo -e "\n\( {BOLD}═══════════════════════════════════ \){X}"
+    echo -e "\n${BOLD}═══════════════════════════════════${X}"
     read -rp "Select (0-13): " choice
     
     case "$choice" in
@@ -1508,9 +1503,9 @@ show_menu() {
         2) add_project ;;
         3)
             clear
-            echo -e "\( {C} \){BOLD}╔════════════════════════════════════════════════════════╗${X}"
-            echo -e "\( {C} \){BOLD}║              START PROJECT                             ║${X}"
-            echo -e "\( {C} \){BOLD}╚════════════════════════════════════════════════════════╝${X}\n"
+            echo -e "${C}${BOLD}╔════════════════════════════════════════════════════════╗${X}"
+            echo -e "${C}${BOLD}║              START PROJECT                             ║${X}"
+            echo -e "${C}${BOLD}╚════════════════════════════════════════════════════════╝${X}\n"
             
             if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
                 msg warn "Belum ada project!"
@@ -1534,9 +1529,9 @@ show_menu() {
             fi
             
             echo ""
-            echo -e "\( {BOLD} \){Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
-            echo -e "\( {BOLD}Pilih project yang ingin di-start \){X}"
-            echo -e "\( {BOLD} \){Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
+            echo -e "${BOLD}${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
+            echo -e "${BOLD}Pilih project yang ingin di-start${X}"
+            echo -e "${BOLD}${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${X}"
             echo ""
             read -rp "Masukkan nomor project (atau 0 untuk batal): " num
             
@@ -1548,7 +1543,7 @@ show_menu() {
                 continue
             fi
             
-            if ! [[ "\( num" =~ ^[0-9]+ \) ]]; then
+            if ! [[ "$num" =~ ^[0-9]+$ ]]; then
                 msg err "Nomor harus ANGKA!"
                 wait_key
                 continue
@@ -1574,7 +1569,7 @@ show_menu() {
             echo ""
             read -rp "Enter project number: " num
             
-            if [ -z "$num" ] || ! [[ "\( num" =~ ^[0-9]+ \) ]]; then
+            if [ -z "$num" ] || ! [[ "$num" =~ ^[0-9]+$ ]]; then
                 msg err "Nomor harus angka!"
                 wait_key
                 return
@@ -1600,7 +1595,7 @@ show_menu() {
             echo ""
             read -rp "Enter project number: " num
             
-            if [ -z "$num" ] || ! [[ "\( num" =~ ^[0-9]+ \) ]]; then
+            if [ -z "$num" ] || ! [[ "$num" =~ ^[0-9]+$ ]]; then
                 msg err "Nomor harus angka!"
                 wait_key
                 return
