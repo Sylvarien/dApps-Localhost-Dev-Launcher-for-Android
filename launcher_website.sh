@@ -1,8 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================================
-# DApps Backend Server Launcher - Professional v4.0.3 (Fixed)
+# DApps Backend Server Launcher - Professional v4.0.4 (Fixed)
 # 
-# CHANGES v4.0.3:
+# CHANGES v4.0.4:
 # ✅ Fixed all syntax errors in conditional expressions
 # ✅ Fixed variable substitutions in strings
 # ✅ Fixed regex patterns causing syntax errors
@@ -18,7 +18,7 @@ PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 PROJECTS_DIR="$HOME/dapps-projects"
 CONFIG_FILE="$HOME/.dapps.conf"
 LOG_DIR="$HOME/.dapps-logs"
-LAUNCHER_VERSION="4.0.3"
+LAUNCHER_VERSION="4.0.4"
 
 DB_VIEWER_DIR="${DB_VIEWER_DIR:-$HOME/paxiforge-db-viewer}"
 DB_VIEWER_PORT="${DB_VIEWER_PORT:-8081}"
@@ -496,10 +496,28 @@ stop_postgres() {
 # ---------------------------
 detect_framework_and_cmd() {
     local pdir="$1"
-    [ ! -f "$pdir/package.json" ] && { echo ""; return; }
+    
+    # Check if package.json exists
+    if [ ! -f "$pdir/package.json" ]; then
+        # No package.json, check for other frameworks
+        if [ -f "$pdir/manage.py" ]; then
+            echo "python manage.py runserver 0.0.0.0:\$PORT"
+            return
+        fi
+        
+        if [ -f "$pdir/app.py" ] || [ -f "$pdir/main.py" ]; then
+            echo "python main.py"
+            return
+        fi
+        
+        # Default fallback
+        echo ""
+        return
+    fi
     
     local pkg_json="$pdir/package.json"
     
+    # Check for specific frameworks
     if grep -q '"express"' "$pkg_json" 2>/dev/null || grep -q '"koa"' "$pkg_json" 2>/dev/null; then
         if grep -q '"dev":' "$pkg_json"; then
             echo "npm run dev"
@@ -520,6 +538,7 @@ detect_framework_and_cmd() {
         return
     fi
     
+    # Check for common scripts
     if grep -q '"dev":' "$pkg_json"; then
         echo "npm run dev"
         return
@@ -530,6 +549,7 @@ detect_framework_and_cmd() {
         return
     fi
     
+    # Default for Node.js projects
     echo "npm start"
 }
 
@@ -537,11 +557,24 @@ adjust_cmd_for_bind() {
     local cmd="$1"
     local port="$2"
     
-    if echo "$cmd" | grep -q "npm start"; then
+    # If command is just a port number, it means detect failed
+    if [[ "$cmd" =~ ^[0-9]+$ ]]; then
+        echo "npm start"
+        return
+    fi
+    
+    # Add PORT env var for common patterns
+    if echo "$cmd" | grep -qE "npm (run )?(start|dev)"; then
         echo "PORT=$port $cmd"
         return
     fi
     
+    if echo "$cmd" | grep -q "node "; then
+        echo "PORT=$port $cmd"
+        return
+    fi
+    
+    # Default: just return the command
     echo "$cmd"
 }
 
@@ -593,7 +626,7 @@ start_service() {
         return 1
     fi
     
-    # Validate port is a number
+    # Validate and sanitize port
     if ! [[ "$port" =~ ^[0-9]+$ ]]; then
         msg warn "Invalid port '$port', using default 8000"
         port=8000
@@ -651,32 +684,51 @@ start_service() {
         fi
     fi
     
+    # Auto-detect or use provided command
     if [ -z "$cmd" ] || [ "$cmd" = "auto" ]; then
         cmd=$(detect_framework_and_cmd "$full_path")
-        [ -z "$cmd" ] && cmd="npm start"
-        msg info "Auto-detected command: $cmd"
+        if [ -z "$cmd" ]; then
+            cmd="npm start"
+            msg warn "Could not detect framework, using: $cmd"
+        else
+            msg info "Auto-detected command: $cmd"
+        fi
+    else
+        msg info "Using configured command: $cmd"
     fi
     
-    local adj_cmd
-    adj_cmd=$(adjust_cmd_for_bind "$cmd" "$final_port")
+    # Prepare the final command with environment variables
+    local final_cmd
+    final_cmd=$(adjust_cmd_for_bind "$cmd" "$final_port")
     
-    msg info "Starting server with: $adj_cmd"
+    msg info "Starting with: $final_cmd"
+    msg info "Directory: $full_path"
+    msg info "Port: $final_port"
     
+    # Start the service
     (
         cd "$full_path" || exit 1
         
-        [ -f ".env" ] && set -a && source .env 2>/dev/null && set +a
+        # Source .env if exists
+        if [ -f ".env" ]; then
+            set -a
+            source .env 2>/dev/null || true
+            set +a
+        fi
         
+        # Export environment variables
         export HOST="0.0.0.0"
         export PORT="$final_port"
         export HOSTNAME="0.0.0.0"
         
-        nohup bash -lc "HOST=0.0.0.0 PORT=$final_port HOSTNAME=0.0.0.0 $adj_cmd" > "$log_file" 2>&1 &
-        echo $! > "$pid_file"
+        # Start in background
+        nohup bash -c "cd '$full_path' && HOST=0.0.0.0 PORT=$final_port HOSTNAME=0.0.0.0 $final_cmd" > "$log_file" 2>&1 &
+        local new_pid=$!
+        echo "$new_pid" > "$pid_file"
         echo "$final_port" > "$port_file"
     )
     
-    sleep 2
+    sleep 3
     
     local pid; pid=$(cat "$pid_file" 2>/dev/null || true)
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
@@ -690,8 +742,8 @@ start_service() {
     else
         msg err "Server failed to start."
         if [ -f "$log_file" ]; then
-            echo -e "${R}--- Log Content ---${X}"
-            cat "$log_file"
+            echo -e "${R}--- Last 20 lines of log ---${X}"
+            tail -n 20 "$log_file"
             echo -e "${R}--- End Log ---${X}"
         fi
         rm -f "$pid_file" "$port_file" || true
@@ -1012,7 +1064,17 @@ run_project_by_num() {
     msg info "Starting server..."
     echo ""
     
-    start_service "$num" "$APP_DIR" "${APP_PORT:-8000}" "${APP_CMD:-auto}" || {
+    # Ensure APP_PORT and APP_CMD have proper values
+    local use_port="${APP_PORT:-8000}"
+    local use_cmd="${APP_CMD:-auto}"
+    
+    # Validate port is a number
+    if ! [[ "$use_port" =~ ^[0-9]+$ ]]; then
+        msg warn "Invalid APP_PORT '$use_port', using 8000"
+        use_port="8000"
+    fi
+    
+    start_service "$num" "$APP_DIR" "$use_port" "$use_cmd" || {
         msg err "Server gagal start"
     }
     
