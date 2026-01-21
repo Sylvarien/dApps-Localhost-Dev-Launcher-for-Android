@@ -546,8 +546,13 @@ adjust_cmd_for_bind() {
 }
 
 get_available_port() {
-    local port="$1"
+    local port="${1:-8000}"
     local max_tries=100
+    
+    # Validate port is a number
+    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+        port=8000
+    fi
     
     for i in $(seq 0 $max_tries); do
         local test_port=$((port + i))
@@ -563,12 +568,15 @@ get_available_port() {
                 return 0
             fi
         else
+            # No network tools, assume port is available
             echo "$test_port"
             return 0
         fi
     done
     
-    return 1
+    # If all ports busy, return the original port anyway
+    echo "$port"
+    return 0
 }
 
 # ---------------------------
@@ -576,13 +584,19 @@ get_available_port() {
 # ---------------------------
 start_service() {
     local num="$1"
-    local dir="$2"
-    local port="$3"
-    local cmd="$4"
+    local dir="${2:-.}"
+    local port="${3:-8000}"
+    local cmd="${4:-auto}"
     
     if [ -z "$num" ]; then
         msg err "INTERNAL ERROR: Project number kosong!"
         return 1
+    fi
+    
+    # Validate port is a number
+    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+        msg warn "Invalid port '$port', using default 8000"
+        port=8000
     fi
     
     local pid_file="${LOG_DIR}/${num}_server.pid"
@@ -621,10 +635,7 @@ start_service() {
     fi
     
     local final_port
-    final_port=$(get_available_port "$port") || {
-        msg err "No port available"
-        return 1
-    }
+    final_port=$(get_available_port "$port")
     
     [ "$final_port" != "$port" ] && msg warn "Port $port in use, using $final_port"
     
@@ -914,17 +925,30 @@ create_db_from_env() {
     
     if [ -z "$DB_NAME" ]; then
         msg warn "DB_NAME tidak ditemukan di .env"
-        read -rp "Masukkan DB_NAME (contoh: app_db): " DB_NAME
+        read -rp "Masukkan DB_NAME untuk database baru (contoh: myapp_db): " DB_NAME
         if [ -z "$DB_NAME" ]; then
             msg err "DB_NAME diperlukan. Skip auto-create."
             return 1
         fi
         
-        local database_url="postgresql://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME"
+        # Validate DB_NAME (no special characters that could break URLs)
+        if [[ ! "$DB_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
+            msg err "DB_NAME hanya boleh mengandung huruf, angka, dan underscore"
+            return 1
+        fi
         
+        local database_url="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+        
+        echo "" >> "$envfile"
+        echo "# Database Configuration" >> "$envfile"
         echo "DB_NAME=$DB_NAME" >> "$envfile"
+        echo "DB_HOST=$DB_HOST" >> "$envfile"
+        echo "DB_PORT=$DB_PORT" >> "$envfile"
+        echo "DB_USER=$DB_USER" >> "$envfile"
         echo "DATABASE_URL=$database_url" >> "$envfile"
-        msg ok "DATABASE_URL ditambahkan ke .env: $database_url"
+        msg ok "Database config ditambahkan ke .env"
+        echo -e "  ${G}→${X} DB_NAME: $DB_NAME"
+        echo -e "  ${G}→${X} DATABASE_URL: $database_url"
     fi
     
     if [ "$DB_HOST" != "127.0.0.1" ] && [ "$DB_HOST" != "localhost" ]; then
