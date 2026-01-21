@@ -950,20 +950,21 @@ edit_env() {
 # ---------------------------
 # Database helpers
 # ---------------------------
+# 1) parse_db_config_from_env (lebih robust; meng-handle DATABASE_URL dengan/ tanpa user:pass)
 parse_db_config_from_env() {
     local envfile="$1"
-    DB_HOST="$DEFAULT_DB_HOST"
-    DB_PORT="$DEFAULT_DB_PORT"
+    DB_HOST="${DEFAULT_DB_HOST}"
+    DB_PORT="${DEFAULT_DB_PORT}"
     DB_NAME=""
-    DB_USER="$DEFAULT_DB_USER"
-    DB_PASSWORD="$DEFAULT_DB_PASS"
-    
+    DB_USER=""
+    DB_PASSWORD="${DEFAULT_DB_PASS}"
+
     [ ! -f "$envfile" ] && return 1
-    
+
     while IFS= read -r line; do
         line="${line%%#*}"
         [[ -z "$line" ]] && continue
-        
+
         if [[ "$line" == DB_HOST=* ]]; then
             DB_HOST="${line#DB_HOST=}"
             DB_HOST="${DB_HOST%\"}"
@@ -989,131 +990,184 @@ parse_db_config_from_env() {
             DB_PASSWORD="${DB_PASSWORD%\"}"
             DB_PASSWORD="${DB_PASSWORD#\"}"
         fi
+
         if [[ "$line" == DATABASE_URL=* ]]; then
-            url="${line#DATABASE_URL=}"
+            local url="${line#DATABASE_URL=}"
             url="${url%\"}"
             url="${url#\"}"
-            
-            # String manipulation to parse URL
+
+            # only parse postgresql:// style
             if [[ "$url" == postgresql://* ]]; then
                 url="${url#postgresql://}"
-                
-                DB_USER="${url%%:*}"
-                url="${url#*:}"
-                
-                DB_PASSWORD="${url%%@*}"
-                url="${url#*@}"
-                
-                host_port_db="$url"
-                DB_HOST="${host_port_db%%:*}"
-                
-                if [[ "$DB_HOST" == "$host_port_db" ]]; then
-                    # No port
-                    DB_PORT="5432"
-                    DB_NAME="${host_port_db#*/}"
-                else
-                    port_db="${host_port_db#*:}"
-                    DB_PORT="${port_db%%/*}"
-                    DB_NAME="${port_db#*/}"
+
+                # split userinfo (optional) and hostinfo
+                local userinfo=""
+                local hostpart="$url"
+                if [[ "$url" == *@* ]]; then
+                    userinfo="${url%%@*}"
+                    hostpart="${url#*@}"
                 fi
+
+                # parse userinfo
+                if [ -n "$userinfo" ]; then
+                    if [[ "$userinfo" == *:* ]]; then
+                        DB_USER="${userinfo%%:*}"
+                        DB_PASSWORD="${userinfo#*:}"
+                    else
+                        DB_USER="${userinfo}"
+                        DB_PASSWORD=""
+                    fi
+                fi
+
+                # parse hostpart -> host:port/dbname
+                # ensure hostpart contains a slash (db part)
+                if [[ "$hostpart" == */* ]]; then
+                    local hostport="${hostpart%%/*}"
+                    local dbpart="${hostpart#*/}"
+                    DB_NAME="${dbpart%%\?*}"        # ignore possible query params
+                else
+                    local hostport="$hostpart"
+                    DB_NAME=""
+                fi
+
+                if [[ "$hostport" == *:* ]]; then
+                    DB_HOST="${hostport%%:*}"
+                    DB_PORT="${hostport#*:}"
+                else
+                    # host might be empty (e.g. postgresql:///mydb) -> treat as localhost / socket
+                    if [ -z "$hostport" ]; then
+                        DB_HOST="${DEFAULT_DB_HOST}"
+                    else
+                        DB_HOST="$hostport"
+                    fi
+                fi
+
+                # fallback defaults
+                DB_PORT="${DB_PORT:-$DEFAULT_DB_PORT}"
+                DB_HOST="${DB_HOST:-$DEFAULT_DB_HOST}"
             fi
         fi
     done < "$envfile"
-    
+
     echo "${DB_HOST}|${DB_PORT}|${DB_NAME}|${DB_USER}|${DB_PASSWORD}"
     return 0
 }
 
+# 2) create_role_if_needed (DIUBAH: tidak auto-create role secara default)
+#    Jika kamu memang ingin auto-create role, set env AUTO_CREATE_DB_ROLE=1 di .dapps.conf atau .env
 create_role_if_needed() {
     local user="$1"
     local pass="$2"
-    
-    if psql -Atqc "SELECT 1 FROM pg_roles WHERE rolname='${user}';" 2>/dev/null | grep -q 1; then
+
+    # Safety: jangan auto-create role kecuali eksplisit diizinkan
+    # Default: skip role creation (sesuai permintaan "tanpa role")
+    if [ "${AUTO_CREATE_DB_ROLE:-0}" != "1" ]; then
+        msg info "Skipping role creation for '$user' (AUTO_CREATE_DB_ROLE not enabled)"
         return 0
     fi
-    
+
+    [ -z "$user" ] && return 0
+
+    # create only if not exist
+    if psql -Atqc "SELECT 1 FROM pg_roles WHERE rolname='${user}'" 2>/dev/null | grep -q 1; then
+        return 0
+    fi
+
     if [ -z "$pass" ]; then
-        psql -c "CREATE ROLE \"$user\" WITH LOGIN;" >/dev/null 2>&1 || return 1
+        psql -d postgres -c "CREATE ROLE \"$user\" WITH LOGIN;" >/dev/null 2>&1 || return 1
     else
-        psql -c "CREATE ROLE \"$user\" WITH LOGIN PASSWORD '$pass';" >/dev/null 2>&1 || return 1
+        psql -d postgres -c "CREATE ROLE \"$user\" WITH LOGIN PASSWORD '$pass';" >/dev/null 2>&1 || return 1
     fi
 }
 
+# 3) create_db_if_needed (aman: jika owner tidak ada, buat tanpa owner)
 create_db_if_needed() {
     local db="$1"
     local owner="$2"
-    
-    if psql -Atqc "SELECT 1 FROM pg_database WHERE datname='${db}';" 2>/dev/null | grep -q 1; then
+
+    # already exists?
+    if psql -Atqc "SELECT 1 FROM pg_database WHERE datname='${db}'" 2>/dev/null | grep -q 1; then
         return 0
     fi
-    
+
+    # try to create with owner if owner exists, otherwise create without owner
     if [ -n "$owner" ]; then
-        psql -c "CREATE DATABASE \"$db\" OWNER \"$owner\";" >/dev/null 2>&1 || return 1
+        if psql -Atqc "SELECT 1 FROM pg_roles WHERE rolname='${owner}'" 2>/dev/null | grep -q 1; then
+            psql -d postgres -c "CREATE DATABASE \"${db}\" OWNER \"${owner}\";" >/dev/null 2>&1 || return 1
+        else
+            msg warn "Owner role '$owner' does not exist — creating database without explicit owner"
+            psql -d postgres -c "CREATE DATABASE \"${db}\";" >/dev/null 2>&1 || return 1
+        fi
     else
-        psql -c "CREATE DATABASE \"$db\";" >/dev/null 2>&1 || return 1
+        psql -d postgres -c "CREATE DATABASE \"${db}\";" >/dev/null 2>&1 || return 1
     fi
+
+    return 0
 }
 
+# 4) create_db_from_env (ubah: skip role creation, buat DB tanpa owner bila perlu)
 create_db_from_env() {
     local num="$1"
     local app_path="$2"
-    load_project "$num" || return 1
-    
+    # load_project "$num" || return 1   # caller sudah memanggil load_project
+
     local envfile="$app_path/.env"
-    
+
     [ ! -f "$envfile" ] && {
         msg warn ".env tidak ditemukan"
         return 1
     }
-    
+
     parsed=$(parse_db_config_from_env "$envfile") || {
         msg err "Gagal parse .env"
         return 1
     }
-    
+
     IFS='|' read -r DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD <<< "$parsed"
-    
+
     if [ -z "$DB_NAME" ]; then
         msg warn "DB_NAME tidak ditemukan di .env"
-        read -rp "Masukkan DB_NAME untuk database baru (contoh: myapp_db): " DB_NAME
+        read -rp "Masukkan DB_NAME untuk database baru (contoh: myapp_db) [kosong = skip]: " DB_NAME
         if [ -z "$DB_NAME" ]; then
-            msg err "DB_NAME diperlukan. Skip auto-create."
+            msg warn "DB_NAME tidak diberikan. Skip auto-create."
             return 1
         fi
-        
-        # Validate DB_NAME (no special characters that could break URLs)
+
+        # validate
         if [[ ! "$DB_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
-            msg err "DB_NAME hanya boleh mengandung huruf, angka, dan underscore"
+            msg err "DB_NAME hanya boleh huruf, angka, underscore"
             return 1
         fi
-        
-        local database_url="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
-        
+
+        # persist minimal config
         echo "" >> "$envfile"
-        echo "# Database Configuration" >> "$envfile"
+        echo "# Database Configuration (auto-added)" >> "$envfile"
         echo "DB_NAME=$DB_NAME" >> "$envfile"
-        echo "DB_HOST=$DB_HOST" >> "$envfile"
-        echo "DB_PORT=$DB_PORT" >> "$envfile"
-        echo "DB_USER=$DB_USER" >> "$envfile"
-        echo "DATABASE_URL=$database_url" >> "$envfile"
+        echo "DB_HOST=${DB_HOST:-$DEFAULT_DB_HOST}" >> "$envfile"
+        echo "DB_PORT=${DB_PORT:-$DEFAULT_DB_PORT}" >> "$envfile"
+        echo "DB_USER=${DB_USER:-}" >> "$envfile"
+        echo "DATABASE_URL=postgresql://${DB_USER:+$DB_USER}${DB_USER:+:${DB_PASSWORD}}@${DB_HOST}:${DB_PORT}/${DB_NAME}" >> "$envfile" 2>/dev/null || true
         msg ok "Database config ditambahkan ke .env"
-        echo -e "  ${G}→${X} DB_NAME: $DB_NAME"
-        echo -e "  ${G}→${X} DATABASE_URL: $database_url"
     fi
-    
+
+    # only handle local DB auto-create; remote hosts are skipped
     if [ "$DB_HOST" != "127.0.0.1" ] && [ "$DB_HOST" != "localhost" ]; then
         msg warn "DB_HOST bukan lokal ($DB_HOST). Skip auto-create."
         return 1
     fi
-    
-    create_role_if_needed "$DB_USER" "$DB_PASSWORD" || true
-    
-    create_db_if_needed "$DB_NAME" "$DB_USER" || true
-    
-    msg ok "DB $DB_NAME siap"
+
+    # do NOT auto-create role unless explicitly allowed (see create_role_if_needed)
+    create_role_if_needed "$DB_USER" "$DB_PASSWORD" || msg warn "create_role_if_needed failed (ignored)"
+
+    # create database: if owner exists it will be used, otherwise database is created without owner
+    create_db_if_needed "$DB_NAME" "$DB_USER" || {
+        msg err "Gagal membuat DB $DB_NAME"
+        return 1
+    }
+
+    msg ok "DB $DB_NAME siap (host=$DB_HOST port=$DB_PORT user='${DB_USER:-(none)}')"
     return 0
 }
-
 # ---------------------------
 # Run/Stop project
 # ---------------------------
