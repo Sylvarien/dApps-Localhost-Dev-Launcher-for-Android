@@ -10,6 +10,7 @@
 # ✅ Auto-setup DATABASE_URL jika DB_NAME kosong.
 # ✅ Create/edit .env jika belum ada atau ingin edit.
 # ✅ Tampilkan log langsung jika gagal start.
+# ✅ Fix: Ganti regex parsing DATABASE_URL dengan string manipulation untuk hindari syntax error di conditional expression.
 # ============================================================================
 
 set -euo pipefail
@@ -405,8 +406,8 @@ prompt_open_path_after_list() {
     read -rp "Ketik (<nomor> info) atau tekan ENTER: " cmd
     [ -z "$cmd" ] && return 0
     
-    if [[ "\( cmd" =~ ^([0-9]+)[[:space:]]+info \) ]]; then
-        local num="${BASH_REMATCH[1]}"
+    if [[ "\( cmd" =~ ^[0-9]+[[:space:]]+info \) ]]; then
+        local num="${BASH_REMATCH[0]%% *}"
         load_project "$num" || { msg err "Project not found"; return 1; }
         
         echo -e "\n${BOLD}=== Project Info: $PROJECT_NAME (#\( num) === \){X}"
@@ -800,49 +801,60 @@ parse_db_config_from_env() {
     
     while IFS= read -r line; do
         line="${line%%#*}"
-        [[ "\( line" =~ ^[[:space:]]* \) ]] && continue
+        [[ -z "$line" ]] && continue
         
-        if [[ "$line" =~ ^DB_HOST= ]]; then
+        if [[ "$line" == DB_HOST=* ]]; then
             DB_HOST="${line#DB_HOST=}"
             DB_HOST="${DB_HOST%\"}"
             DB_HOST="${DB_HOST#\"}"
         fi
-        if [[ "$line" =~ ^DB_PORT= ]]; then
+        if [[ "$line" == DB_PORT=* ]]; then
             DB_PORT="${line#DB_PORT=}"
             DB_PORT="${DB_PORT%\"}"
             DB_PORT="${DB_PORT#\"}"
         fi
-        if [[ "$line" =~ ^DB_NAME= ]]; then
+        if [[ "$line" == DB_NAME=* ]]; then
             DB_NAME="${line#DB_NAME=}"
             DB_NAME="${DB_NAME%\"}"
             DB_NAME="${DB_NAME#\"}"
         fi
-        if [[ "$line" =~ ^DB_USER= ]]; then
+        if [[ "$line" == DB_USER=* ]]; then
             DB_USER="${line#DB_USER=}"
             DB_USER="${DB_USER%\"}"
             DB_USER="${DB_USER#\"}"
         fi
-        if [[ "$line" =~ ^DB_PASSWORD= ]]; then
+        if [[ "$line" == DB_PASSWORD=* ]]; then
             DB_PASSWORD="${line#DB_PASSWORD=}"
             DB_PASSWORD="${DB_PASSWORD%\"}"
             DB_PASSWORD="${DB_PASSWORD#\"}"
         fi
-        if [[ "$line" =~ ^DATABASE_URL= ]]; then
+        if [[ "$line" == DATABASE_URL=* ]]; then
             url="${line#DATABASE_URL=}"
             url="${url%\"}"
             url="${url#\"}"
             
-            if [[ "$url" =~ postgresql://([^:]+):([^@]+)@([^:]+):([0-9]+)/(.+) ]]; then
-                DB_USER="${BASH_REMATCH[1]}"
-                DB_PASSWORD="${BASH_REMATCH[2]}"
-                DB_HOST="${BASH_REMATCH[3]}"
-                DB_PORT="${BASH_REMATCH[4]}"
-                DB_NAME="${BASH_REMATCH[5]}"
-            elif [[ "$url" =~ postgresql://([^:]+):([^@]+)@([^/]+)/(.+) ]]; then
-                DB_USER="${BASH_REMATCH[1]}"
-                DB_PASSWORD="${BASH_REMATCH[2]}"
-                DB_HOST="${BASH_REMATCH[3]}"
-                DB_NAME="${BASH_REMATCH[4]}"
+            # String manipulation to parse URL
+            if [[ "$url" == postgresql://* ]]; then
+                url="${url#postgresql://}"
+                
+                DB_USER="${url%%:*}"
+                url="${url#*:}"
+                
+                DB_PASSWORD="${url%%@*}"
+                url="${url#@*}"
+                
+                host_port_db="$url"
+                DB_HOST="${host_port_db%%:*}"
+                
+                if [[ "$DB_HOST" == "$host_port_db" ]]; then
+                    # No port
+                    DB_PORT="5432"
+                    DB_NAME="${host_port_db#*/}"
+                else
+                    port_db="${host_port_db#*:}"
+                    DB_PORT="${port_db%%/*}"
+                    DB_NAME="${port_db#*/}"
+                fi
             fi
         fi
     done < "$envfile"
