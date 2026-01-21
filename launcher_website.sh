@@ -563,18 +563,8 @@ adjust_cmd_for_bind() {
         return
     fi
     
-    # Add PORT env var for common patterns
-    if echo "$cmd" | grep -qE "npm (run )?(start|dev)"; then
-        echo "PORT=$port $cmd"
-        return
-    fi
-    
-    if echo "$cmd" | grep -q "node "; then
-        echo "PORT=$port $cmd"
-        return
-    fi
-    
-    # Default: just return the command
+    # Don't add PORT prefix - it will be exported as environment variable
+    # Just return the command as-is
     echo "$cmd"
 }
 
@@ -646,7 +636,14 @@ start_service() {
         rm -f "$pid_file" || true
     fi
     
-    local full_path="$PROJECT_PATH/$dir"
+    # Build full path - handle root directory case
+    local full_path
+    if [ -z "$dir" ] || [ "$dir" = "." ]; then
+        full_path="$PROJECT_PATH"
+    else
+        full_path="$PROJECT_PATH/$dir"
+    fi
+    
     [ ! -d "$full_path" ] && {
         msg err "App folder not found: $full_path"
         return 1
@@ -704,18 +701,15 @@ start_service() {
         msg info "Using command: $cmd"
     fi
     
-    # Prepare the final command with environment variables
-    local final_cmd
-    final_cmd=$(adjust_cmd_for_bind "$cmd" "$final_port")
+    msg info "Starting backend server..."
+    msg info "  Directory: $full_path"
+    msg info "  Command: $cmd"
+    msg info "  Port: $final_port"
     
-    msg info "Starting with: $final_cmd"
-    msg info "Directory: $full_path"
-    msg info "Port: $final_port"
-    
-    # Create startup script
-    cat > "$start_script" <<EOFSCRIPT
+    # Create startup script with proper quoting
+    cat > "$start_script" <<'EOFSCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
-cd "$full_path" || exit 1
+cd "PROJECT_PATH_PLACEHOLDER" || exit 1
 
 # Source .env if exists
 if [ -f ".env" ]; then
@@ -726,13 +720,18 @@ fi
 
 # Export environment variables
 export HOST="0.0.0.0"
-export PORT="$final_port"
+export PORT="PORT_PLACEHOLDER"
 export HOSTNAME="0.0.0.0"
-export NODE_ENV="\${NODE_ENV:-development}"
+export NODE_ENV="${NODE_ENV:-development}"
 
 # Execute the command
-exec $final_cmd
+exec CMD_PLACEHOLDER
 EOFSCRIPT
+    
+    # Replace placeholders with proper escaping
+    sed -i "s|PROJECT_PATH_PLACEHOLDER|$full_path|g" "$start_script"
+    sed -i "s|PORT_PLACEHOLDER|$final_port|g" "$start_script"
+    sed -i "s|CMD_PLACEHOLDER|$cmd|g" "$start_script"
     
     chmod +x "$start_script"
     
@@ -749,11 +748,19 @@ EOFSCRIPT
     # Check if process is still running
     if ! kill -0 "$new_pid" 2>/dev/null; then
         msg err "Server process died immediately!"
+        echo ""
+        msg info "Checking log file for errors..."
         if [ -f "$log_file" ]; then
             echo -e "${R}--- Last 30 lines of log ---${X}"
             tail -n 30 "$log_file"
             echo -e "${R}--- End Log ---${X}"
         fi
+        echo ""
+        msg info "Possible issues:"
+        echo "  1. package.json missing or invalid"
+        echo "  2. Dependencies not installed (use menu 5)"
+        echo "  3. Wrong start command in package.json"
+        echo "  4. Port already in use"
         rm -f "$pid_file" "$port_file" || true
         return 1
     fi
@@ -771,11 +778,19 @@ EOFSCRIPT
     
     local ip; ip=$(get_device_ip)
     msg ok "Server started and running!"
+    echo ""
+    echo -e "${BOLD}Server Information:${X}"
     echo -e "  ${G}→${X} PID: $new_pid"
     echo -e "  ${G}→${X} Port: $final_port"
-    echo -e "  ${G}→${X} Network URL: http://$ip:$final_port"
-    echo -e "  ${G}→${X} Local URL: http://localhost:$final_port"
-    echo -e "  ${G}→${X} Log file: $log_file"
+    echo -e "  ${G}→${X} Directory: $full_path"
+    echo ""
+    echo -e "${BOLD}Access URLs:${X}"
+    echo -e "  ${G}→${X} Network: http://$ip:$final_port"
+    echo -e "  ${G}→${X} Local: http://localhost:$final_port"
+    echo ""
+    echo -e "${BOLD}Logs:${X}"
+    echo -e "  ${G}→${X} File: $log_file"
+    echo -e "  ${G}→${X} Live: tail -f $log_file"
     echo ""
     msg info "Server akan terus berjalan hingga di-stop manual atau Termux ditutup"
     
@@ -1075,17 +1090,29 @@ run_project_by_num() {
         return 1
     fi
     
-    if [ ! -d "$PROJECT_PATH/$APP_DIR" ]; then
-        msg err "App folder tidak ditemukan: $PROJECT_PATH/$APP_DIR"
+    # Build full path - handle empty APP_DIR (root of project)
+    local app_full_path
+    if [ -z "$APP_DIR" ] || [ "$APP_DIR" = "." ]; then
+        app_full_path="$PROJECT_PATH"
+    else
+        app_full_path="$PROJECT_PATH/$APP_DIR"
+    fi
+    
+    if [ ! -d "$app_full_path" ]; then
+        msg err "App folder tidak ditemukan: $app_full_path"
+        echo ""
+        echo "Struktur project saat ini:"
+        ls -la "$PROJECT_PATH" 2>/dev/null || echo "  (tidak bisa membaca directory)"
+        echo ""
         msg info "Gunakan 'Edit Project Config' (menu 11) untuk update APP_DIR"
+        msg info "Atau gunakan '.' jika backend ada di root project"
         wait_key
         return 1
     fi
     
     [ "$AUTO_SYNC" = "1" ] && auto_sync_project "$num" || true
     
-    local app_path="$PROJECT_PATH/$APP_DIR"
-    if [ -f "$app_path/package.json" ] && [ ! -d "$app_path/node_modules" ]; then
+    if [ -f "$app_full_path/package.json" ] && [ ! -d "$app_full_path/node_modules" ]; then
         if confirm "Deps missing. Install now?"; then
             install_deps "$num"
         fi
@@ -1098,6 +1125,7 @@ run_project_by_num() {
     # Ensure APP_PORT and APP_CMD have proper values
     local use_port="${APP_PORT:-8000}"
     local use_cmd="${APP_CMD:-auto}"
+    local use_dir="${APP_DIR:-.}"
     
     # Validate port is a number
     if ! [[ "$use_port" =~ ^[0-9]+$ ]]; then
@@ -1105,7 +1133,7 @@ run_project_by_num() {
         use_port="8000"
     fi
     
-    start_service "$num" "$APP_DIR" "$use_port" "$use_cmd" || {
+    start_service "$num" "$use_dir" "$use_port" "$use_cmd" || {
         msg err "Server gagal start"
     }
     
@@ -1144,6 +1172,13 @@ add_project() {
         return
     }
     
+    # Sanitize project name for filesystem (replace spaces with underscores)
+    local safe_name="${name// /_}"
+    if [ "$safe_name" != "$name" ]; then
+        msg warn "Project name contains spaces, sanitizing to: $safe_name"
+        name="$safe_name"
+    fi
+    
     local local_path="$PROJECTS_DIR/$name"
     mkdir -p "$local_path"
     
@@ -1178,23 +1213,66 @@ add_project() {
     fi
     
     echo ""
-    echo -e "${BOLD}Konfigurasi Folder (WAJIB!)${X}"
-    echo "Masukkan nama folder relatif terhadap project root"
+    echo -e "${BOLD}Konfigurasi Backend Directory${X}"
+    echo "Masukkan nama folder backend relatif terhadap project root"
+    echo ""
+    echo "Contoh struktur project:"
+    echo "  $local_path/"
+    echo "  ├── backend/      ← jika backend di folder 'backend'"
+    echo "  ├── server/       ← jika backend di folder 'server'"
+    echo "  ├── api/          ← jika backend di folder 'api'"
+    echo "  └── package.json  ← jika backend di root, ketik: ."
     echo ""
     
-    read -rp "App directory (contoh: backend, api): " app_dir
-    [ -z "$app_dir" ] && {
-        msg warn "App dir kosong, set ke 'backend'"
-        app_dir="backend"
-    }
+    # Auto-detect backend folder
+    local detected_dir=""
+    for dir in "backend" "server" "api" "src" "."; do
+        local check_path="$local_path/$dir"
+        [ "$dir" = "." ] && check_path="$local_path"
+        
+        if [ -f "$check_path/package.json" ]; then
+            detected_dir="$dir"
+            msg info "Detected package.json in: $dir"
+            break
+        fi
+    done
     
-    read -rp "App port (default: 8000): " app_port
-    app_port="${app_port:-8000}"
+    read -rp "Backend directory [detected: ${detected_dir:-(none)}]: " app_dir
+    
+    if [ -z "$app_dir" ]; then
+        if [ -n "$detected_dir" ]; then
+            app_dir="$detected_dir"
+            msg ok "Using detected: $app_dir"
+        else
+            msg warn "No directory specified, defaulting to 'backend'"
+            app_dir="backend"
+        fi
+    fi
+    
+    # Normalize "." to empty string for root
+    [ "$app_dir" = "." ] && app_dir=""
+    
+    # Verify the directory exists
+    local verify_path="$local_path/$app_dir"
+    [ -z "$app_dir" ] && verify_path="$local_path"
+    
+    if [ ! -d "$verify_path" ]; then
+        msg warn "Directory '$app_dir' not found in project"
+        if confirm "Create directory '$app_dir' now?"; then
+            mkdir -p "$verify_path"
+            msg ok "Directory created"
+        else
+            msg warn "You can set this later with menu 11"
+        fi
+    fi
+    
+    read -rp "Backend port (default: 3000): " app_port
+    app_port="${app_port:-3000}"
     
     local app_cmd="auto"
     
     if confirm "Custom start command? (No = auto-detect)"; then
-        read -rp "App command: " app_cmd
+        read -rp "Start command: " app_cmd
         [ -z "$app_cmd" ] && app_cmd="auto"
     fi
     
@@ -1206,7 +1284,10 @@ add_project() {
     
     msg ok "Project added as #$new_num"
     echo ""
-    echo "App: $app_dir"
+    echo "Project: $name"
+    echo "Path: $local_path"
+    echo "Backend: $app_dir"
+    echo "Port: $app_port"
     wait_key
 }
 
